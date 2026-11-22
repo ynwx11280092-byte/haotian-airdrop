@@ -1,0 +1,355 @@
+=== FILE: qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+
+<<<<<<<
+=======
+#ifdef DRIVER_PASSTHRU_DP
+#ifndef QCA_HOST_MODE_WIFI_DISABLED
+/* Caller holds a real reference and serializes vdev control operations. */
+static QDF_STATUS
+dp_passthru_register_held(struct dp_vdev *vdev,
+                         ol_osif_vdev_handle osif_vdev,
+                         struct ol_txrx_ops *ops, uint16_t freq)
+{
+	QDF_STATUS status = QDF_STATUS_E_INVAL;
+
+	if (vdev->opmode != wlan_op_mode_passthru ||
+	    vdev->qdf_opmode != QDF_PASSTHRU_MODE)
+		return status;
+
+	qdf_spin_lock_bh(&vdev->passthru_lock);
+	if (vdev->passthru_state != DP_PASSTHRU_NEW ||
+	    vdev->delete.pending || !vdev->passthru_arch_attached) {
+		status = QDF_STATUS_E_BUSY;
+	} else {
+		/* All fallible work precedes this commit. Readers use the same
+		 * gate; only these immutable callback pointers are reachable.
+		 */
+		vdev->osif_vdev = osif_vdev;
+		vdev->osif_rx = ops->rx.rx;
+		vdev->vdev_del_notify = ops->vdev_del_notify;
+		vdev->passthru_freq = freq;
+		ops->tx.tx = dp_tx_send_passthru;
+		ops->tx.tx_fast = NULL;
+		ops->tx.tx_exception = NULL;
+#ifdef WLAN_FEATURE_OSRTP
+		ops->tx.tx_osrtp = NULL;
+#endif
+		vdev->passthru_state = DP_PASSTHRU_ACTIVE;
+		status = QDF_STATUS_SUCCESS;
+	}
+	qdf_spin_unlock_bh(&vdev->passthru_lock);
+	return status;
+}
+#endif
+
+static QDF_STATUS
+dp_passthru_register_wifi3(struct cdp_soc_t *cdp_soc, uint8_t vdev_id,
+			  ol_osif_vdev_handle osif_vdev,
+			  struct ol_txrx_ops *ops, uint16_t freq)
+{
+#ifdef QCA_HOST_MODE_WIFI_DISABLED
+	return QDF_STATUS_E_NOSUPPORT;
+#else
+	struct dp_soc *soc = (struct dp_soc *)cdp_soc;
+	struct dp_vdev *vdev;
+	QDF_STATUS status;
+
+	if (!osif_vdev || !ops || !ops->rx.rx || !ops->vdev_del_notify ||
+	    freq < 2300 || freq > 7125)
+		return QDF_STATUS_E_INVAL;
+	vdev = dp_vdev_get_ref_by_id(soc, vdev_id, DP_MOD_ID_CDP);
+	if (!vdev)
+		return QDF_STATUS_E_FAILURE;
+	status = dp_passthru_register_held(vdev, osif_vdev, ops, freq);
+	dp_vdev_unref_delete(soc, vdev, DP_MOD_ID_CDP);
+	return status;
+#endif
+}
+
+static QDF_STATUS
+dp_passthru_close_wifi3(struct cdp_soc_t *cdp_soc, uint8_t vdev_id)
+{
+	struct dp_soc *soc = (struct dp_soc *)cdp_soc;
+	struct dp_vdev *vdev;
+	QDF_STATUS status = QDF_STATUS_E_INVAL;
+
+	vdev = dp_vdev_get_ref_by_id(soc, vdev_id, DP_MOD_ID_CDP);
+	if (!vdev)
+		return QDF_STATUS_E_FAILURE;
+	if (vdev->opmode == wlan_op_mode_passthru)
+		status = dp_passthru_close_gate(vdev, false);
+	dp_vdev_unref_delete(soc, vdev, DP_MOD_ID_CDP);
+	return status;
+}
+#endif
+
+#ifdef DRIVER_PASSTHRU_OWNER
+static QDF_STATUS
+dp_passthru_recovery_close_wifi3(struct cdp_soc_t *cdp_soc)
+{
+	struct dp_soc *soc = (struct dp_soc *)cdp_soc;
+
+	dp_passthru_receipts_close(&soc->passthru_receipts);
+	return QDF_STATUS_SUCCESS;
+}
+
+static QDF_STATUS
+dp_passthru_recovery_status_wifi3(struct cdp_soc_t *cdp_soc, uint32_t *pending)
+{
+	struct dp_soc *soc = (struct dp_soc *)cdp_soc;
+
+	return dp_passthru_receipts_status(&soc->passthru_receipts, pending);
+}
+
+/* Private allocation, never a vdev ID token. The owner serializes control
+ * calls and retains this handle across every managed_tx invocation.
+ */
+struct cdp_passthru_handle {
+	struct dp_soc *soc;
+	struct dp_vdev *vdev;
+};
+
+/* The managed owner serializes bind/control calls and pins this exact vdev.
+ * A concurrent teardown can close the gate, but final deletion cannot run
+ * until our reference is dropped. Never publish callbacks before pool setup.
+ */
+static QDF_STATUS dp_passthru_pool_map_held(struct dp_vdev *vdev)
+{
+#ifdef QCA_LL_TX_FLOW_CONTROL_V2
+	struct dp_soc *soc;
+	bool ready;
+
+	if (vdev->opmode != wlan_op_mode_passthru ||
+	    vdev->qdf_opmode != QDF_PASSTHRU_MODE || !vdev->pdev ||
+	    !vdev->pdev->soc || vdev->vdev_id >= MAX_TXDESC_POOLS)
+		return QDF_STATUS_E_INVAL;
+	soc = vdev->pdev->soc;
+	if (!soc->pause_cb || vdev->vdev_id >=
+	    wlan_cfg_get_num_tx_desc_pool(soc->wlan_cfg_ctx))
+		return QDF_STATUS_E_INVAL;
+	qdf_spin_lock_bh(&vdev->passthru_lock);
+	ready = vdev->passthru_state == DP_PASSTHRU_NEW &&
+		!vdev->delete.pending && vdev->passthru_arch_attached;
+	qdf_spin_unlock_bh(&vdev->passthru_lock);
+	if (!ready)
+		return QDF_STATUS_E_BUSY;
+	/* No passthru lock across allocation. This API never looks up by ID. */
+	return dp_tx_passthru_pool_map(vdev);
+#endif
+	return QDF_STATUS_SUCCESS;
+}
+
+static void dp_passthru_pool_rollback_held(struct dp_vdev *vdev)
+{
+#ifdef QCA_LL_TX_FLOW_CONTROL_V2
+	/* Only called after our map succeeded and callback publication failed.
+ * The NEW/closed gate admits no TX, so all descriptors are still free.
+ * Successful binds leave normal final vdev deletion to unmap the pool.
+ */
+	dp_tx_passthru_pool_unmap(vdev);
+#endif
+}
+
+static QDF_STATUS
+dp_passthru_managed_bind_wifi3(struct cdp_soc_t *cdp_soc, uint8_t vdev_id,
+		ol_osif_vdev_handle osif_vdev, struct ol_txrx_ops *ops,
+		uint16_t freq, struct cdp_passthru_handle **out)
+{
+#ifdef QCA_HOST_MODE_WIFI_DISABLED
+	return QDF_STATUS_E_NOSUPPORT;
+#else
+	struct dp_soc *soc = (struct dp_soc *)cdp_soc;
+	struct cdp_passthru_handle *handle;
+	struct dp_vdev *vdev;
+	QDF_STATUS status;
+
+	if (!out || *out || !osif_vdev || !ops || !ops->rx.rx ||
+	    !ops->vdev_del_notify || freq < 2300 || freq > 7125)
+		return QDF_STATUS_E_INVAL;
+	handle = qdf_mem_malloc(sizeof(*handle));
+	if (!handle)
+		return QDF_STATUS_E_NOMEM;
+	vdev = dp_vdev_get_ref_by_id(soc, vdev_id, DP_MOD_ID_CDP);
+	if (!vdev) {
+		qdf_mem_free(handle);
+		return QDF_STATUS_E_FAILURE;
+	}
+	handle->soc = soc;
+	handle->vdev = vdev;
+	status = dp_passthru_pool_map_held(vdev);
+	if (QDF_IS_STATUS_ERROR(status))
+		goto fail;
+	status = dp_passthru_register_held(vdev, osif_vdev, ops, freq);
+	if (QDF_IS_STATUS_ERROR(status)) {
+		dp_passthru_pool_rollback_held(vdev);
+		goto fail;
+	}
+	/* Retain this lookup reference as the finalizer guard. The managed
+	 * caller must transmit through the identity-aware API, not bare ID.
+	 */
+	ops->tx.tx = NULL;
+	*out = handle;
+	return QDF_STATUS_SUCCESS;
+fail:
+	dp_vdev_unref_delete(soc, vdev, DP_MOD_ID_CDP);
+	qdf_mem_free(handle);
+	return status;
+#endif
+}
+
+/* Caller retains the exact managed handle and serializes control operations.
+ * Pause is sticky even on BUSY: later data calls fail admission while existing
+ * CPU users leave. This is not a hardware TX/RX/DMA drain.
+ */
+static QDF_STATUS
+dp_passthru_managed_pause_wifi3(struct cdp_soc_t *cdp_soc,
+			      struct cdp_passthru_handle *handle)
+{
+	struct dp_vdev *vdev;
+	QDF_STATUS status = QDF_STATUS_E_BUSY;
+
+	if (!handle || handle->soc != (struct dp_soc *)cdp_soc)
+		return QDF_STATUS_E_INVAL;
+	vdev = handle->vdev;
+	if (!vdev)
+		return status;
+	qdf_spin_lock_bh(&vdev->passthru_lock);
+	if (vdev->passthru_state == DP_PASSTHRU_ACTIVE &&
+	    !vdev->delete.pending) {
+		vdev->passthru_paused = true;
+		if (!vdev->passthru_users)
+			status = QDF_STATUS_SUCCESS;
+	}
+	qdf_spin_unlock_bh(&vdev->passthru_lock);
+	return status;
+}
+
+/* The controller must first receive a correlated successful FW channel result.
+ * This only commits host RX metadata and reopens CPU admission; it does not
+ * tune the radio or manufacture a firmware acknowledgement. No bare-ID lookup.
+ */
+static QDF_STATUS
+dp_passthru_managed_set_channel_wifi3(struct cdp_soc_t *cdp_soc,
+				    struct cdp_passthru_handle *handle,
+				    uint16_t frequency)
+{
+	struct dp_vdev *vdev;
+	QDF_STATUS status = QDF_STATUS_E_BUSY;
+
+	if (!handle || handle->soc != (struct dp_soc *)cdp_soc ||
+	    frequency < 2300 || frequency > 7125)
+		return QDF_STATUS_E_INVAL;
+	vdev = handle->vdev;
+	if (!vdev)
+		return status;
+	qdf_spin_lock_bh(&vdev->passthru_lock);
+	if (vdev->passthru_state == DP_PASSTHRU_ACTIVE &&
+	    vdev->passthru_paused && !vdev->passthru_users &&
+	    !vdev->delete.pending) {
+		/* Every reader holds an enter/exit ticket. Frequency is stable
+		 * for the entire ticket, including radiotap construction.
+		 */
+		vdev->passthru_freq = frequency;
+		vdev->passthru_paused = false;
+		status = QDF_STATUS_SUCCESS;
+	}
+	qdf_spin_unlock_bh(&vdev->passthru_lock);
+	return status;
+}
+
+static QDF_STATUS
+dp_passthru_managed_close_wifi3(struct cdp_soc_t *cdp_soc,
+			      struct cdp_passthru_handle *handle)
+{
+	if (!handle || handle->soc != (struct dp_soc *)cdp_soc)
+		return QDF_STATUS_E_INVAL;
+	if (!handle->vdev)
+		return QDF_STATUS_E_BUSY;
+	return dp_passthru_close_gate(handle->vdev, false);
+}
+
+static QDF_STATUS
+dp_passthru_managed_join_wifi3(struct cdp_soc_t *cdp_soc,
+			     struct cdp_passthru_handle **inout)
+{
+	struct dp_soc *soc = (struct dp_soc *)cdp_soc;
+	struct cdp_passthru_handle *handle;
+	struct dp_vdev *vdev, *entry;
+	bool ready = false;
+
+	if (!inout || !*inout || (*inout)->soc != soc)
+		return QDF_STATUS_E_INVAL;
+	handle = *inout;
+	vdev = handle->vdev;
+	if (!vdev)
+		return QDF_STATUS_E_BUSY;
+
+	/* Detach inserts this exact object only after removing the ID map and
+	 * pdev list. Holding the inactive lock also excludes a new flush ref.
+	 * ref==1 requires detach to have dropped its CONFIG and lookup refs.
+	 * A legal direct-pointer ref taker must already own another reference.
+	 */
+	qdf_spin_lock_bh(&soc->inactive_vdev_list_lock);
+	TAILQ_FOREACH(entry, &soc->inactive_vdev_list, inactive_list_elem) {
+		if (entry != vdev)
+			continue;
+		if (vdev->passthru_state == DP_PASSTHRU_DETACHING &&
+		    vdev->delete.pending && !vdev->passthru_users &&
+		    qdf_atomic_read(&vdev->ref_cnt) == 1) {
+			TAILQ_REMOVE(&soc->inactive_vdev_list, vdev,
+				     inactive_list_elem);
+			ready = true;
+		}
+		break;
+	}
+	qdf_spin_unlock_bh(&soc->inactive_vdev_list_lock);
+	if (!ready)
+		return QDF_STATUS_E_BUSY;
+
+	/* A callback may attempt reentry; reject it without waiting. Do not
+	 * publish successful completion until BOTH legacy callbacks returned.
+	 * This does not join other ref-put callers' tails or pin soc/pdev/code.
+	 */
+	handle->vdev = NULL;
+	dp_vdev_unref_delete(soc, vdev, DP_MOD_ID_CDP);
+	qdf_mem_free(handle);
+	*inout = NULL;
+	return QDF_STATUS_SUCCESS;
+}
+
+static qdf_nbuf_t
+dp_passthru_managed_tx_wifi3(struct cdp_soc_t *cdp_soc,
+			   struct cdp_passthru_handle *handle, qdf_nbuf_t nbuf)
+{
+	struct dp_vdev *vdev;
+
+	if (!handle || handle->soc != (struct dp_soc *)cdp_soc)
+		return nbuf;
+	vdev = handle->vdev;
+	if (!vdev)
+		return nbuf;
+	return dp_tx_send_passthru_identity(cdp_soc, vdev->vdev_id, nbuf, vdev);
+}
+#endif
+
+static struct cdp_vdev *
+dp_vdev_register_wifi3(struct cdp_soc_t *soc_hdl, uint8_t vdev_id,
+		       ol_osif_vdev_handle osif_vdev,
+>>>>>>>
+
+---
+<<<<<<<
+
+	if (vdev_del_notify)
+		vdev_del_notify(vdev_del_noitfy_ctx);
+=======
+#ifdef DRIVER_PASSTHRU_OWNER
+	/* Not detach acceptance or ID removal: memory and both callbacks done.
+	 * No later soc access; outer teardown still joins ref-put caller tails.
+	 */
+	if (receipt_owed)
+		dp_passthru_receipts_end(&soc->passthru_receipts);
+#endif
+>>>>>>>
+
+---

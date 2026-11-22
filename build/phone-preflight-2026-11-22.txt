@@ -1,0 +1,67 @@
+==================== haotian-airdrop preflight ====================
+time                     2026-11-22 01:59:24
+root                     0
+--- props ---
+device                   haotian
+marketname               Xiaomi 15 Pro
+hyperos                  OS4.0.4.0.XOBCNXM
+build                    OS4.0.4.0.XOBCNXM
+sdk                      37
+kernel                   6.6.118-android15-8-gf72a02f47f4b-abogki551678766-4k
+expected                 6.6.118-android15-8-gf72a02f47f4b-abogki551678766-4k
+--- WLAN 驱动 ---
+  (无法读取 /vendor_dlkm/lib/modules)
+module:qca_cld3_peach_v2 present
+  build-id               ece9daf2a2a9b1fb09fc9710d7c08aa9d995d6a2ebc9395190c8c6eb3f862f80
+
+module:cnss2             present
+  build-id               2701f343c89b7799320ef84d700180be75099c528a8f66a6f789f0a91b123050
+
+driver_ko                /vendor_dlkm/lib/modules/qca_cld3_peach_v2.ko
+driver_sha               86d56305f1eff270d552e32e525e40b967eaa95e8038cb43f89b81221494d197
+driver_vermagic          vermagic=6.6.57-android15-8-4k
+--- WLAN 固件 ---
+/vendor/firmware_mnt/image/peach/amss20.bin size=6930496 sha=90e365a5371c7fb698943e45a0b26e60edbba17d4e9f1e5bf9fdc673538a97fc
+/vendor/firmware_mnt/image/peach/amss.bin size=7000128 sha=7bcdb17787027d0b9b9ba36088d554e122890feb0b6ce6c16efcdf3846e84567
+total 28576
+-r--r----- 1 system system 1798396 2026-11-12 21:59 Data.msc
+-r--r----- 1 system system 1787611 2026-11-12 21:59 Data20.msc
+-r--r----- 1 system system 7000128 2026-11-12 21:59 amss.bin
+-r--r----- 1 system system 6930496 2026-11-12 21:59 amss20.bin
+-r--r----- 1 system system   61440 2026-11-12 21:59 aux_ucode.elf
+-r--r----- 1 system system   61440 2026-11-12 21:59 aux_ucode20.elf
+-r--r----- 1 system system  125280 2026-11-12 21:59 bd_o1.elf
+-r--r----- 1 system system  125368 2026-11-12 21:59 bd_o11u.elf
+-r--r----- 1 system system  125488 2026-11-12 21:59 bd_o11u_v1.elf
+-r--r----- 1 system system  125404 2026-11-12 21:59 bd_o11ugl.elf
+-r--r----- 1 system system  125488 2026-11-12 21:59 bd_o11ugl_v1.elf
+-r--r----- 1 system system  125272 2026-11-12 21:59 bd_o18.elf
+-r--r----- 1 system system  125272 2026-11-12 21:59 bd_o18gl.elf
+-r--r----- 1 system system  125276 2026-11-12 21:59 bd_o1gl.elf
+-r--r----- 1 system system  125288 2026-11-12 21:59 bd_o1in.elf
+-r--r----- 1 system system  125288 2026-11-12 21:59 bd_o2.elf
+-r--r----- 1 system system  125288 2026-11-12 21:59 bd_o2_v1.elf
+-r--r----- 1 system system  125280 2026-11-12 21:59 bd_o3.elf
+-r--r----- 1 system system  125280 2026-11-12 21:59 bd_o3_v1.elf
+--- wonder / PASSTHRU 支持 ---
+wonder_enable            missing
+wonder_proc              
+kallsyms_cnss_wonder     0
+kallsyms_cnss_vendor     0
+--- 小米互传 ---
+mishare_path             package:/data/app/~~5m_dlyDgCsyCAsRJBALqwQ==/com.miui.mishare.connectivity-Sl-7xgKnM7ccs2LYBNBGUw==/base.apk
+mishare_vc               50500
+mishare_vn               5.5.0_20261029_1004
+--- root / LSPosed ---
+ksu                      yes
+magisk                   no
+lsposed                  yes
+--- 现有模块痕迹 ---
+xos_dir                  none
+xos0                     none
+saved_env                none
+--- PCI WLAN 设备 ---
+/sys/class/net/wlan0     /sys/devices/platform/soc/1c00000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0
+wlan_pci_ctl             /sys/bus/pci/devices/0000:00:00.0/power/control
+wlan_pci_ctl             /sys/bus/pci/devices/0000:01:00.0/power/control
+==================================================================

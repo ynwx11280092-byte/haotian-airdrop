@@ -1,0 +1,36 @@
+﻿# 构建产物
+build/out/
+build/kernel-out/
+build/phone/
+build/src/
+dist/
+upstream/
+compat/build/
+compat/dist/*.idsig
+
+# 本机工具/生成文件
+*.jks
+*.log
+node_modules/
+_src/
+_tools/
+research/
+
+# 闭源固件 / 上游二进制（BYOB 自取，见 firmware/README.md）
+firmware/*.bin
+firmware/*.img
+upstream/
+compat/dist/
+
+# 内核模块编译中间产物
+driver/**/*.ko
+driver/**/*.o
+driver/**/*.cmd
+driver/**/.*.cmd
+driver/**/*.mod
+driver/**/*.mod.c
+driver/**/modules.order
+driver/**/Module.symvers
+driver/**/built-in.a
+*.rej
+*.orig

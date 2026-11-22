@@ -1,0 +1,129 @@
+######## FILE: qcacld-3.0/core/pld/src/pld_pcie.c
+######## REJ:
+--- qcacld-3.0/core/pld/src/pld_pcie.c
++++ qcacld-3.0/core/pld/src/pld_pcie.c
+@@ -895,7 +895,10 @@ int pld_pcie_wlan_disable(struct device *dev, enum pld_driver_mode mode)
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+ int pld_pcie_get_tsf_gpio(struct device *dev)
+ {
+-	return cnss_get_wlan_tsf_gpio(dev);
++	/* pandora: the shipping cnss2.ko does not export cnss_get_wlan_tsf_gpio
++	 * (the stock qca_cld3_peach_v2.ko never imports it); no TSF sync GPIO.
++	 */
++	return -EINVAL;
+ }
+ #else
+ int pld_pcie_get_tsf_gpio(struct device *dev)
+
+######## CURRENT (function region):
+   865			cfg.rri_over_ddr_cfg.base_addr_low =
+   866				 config->rri_over_ddr_cfg.base_addr_low;
+   867			cfg.rri_over_ddr_cfg.base_addr_high =
+   868				 config->rri_over_ddr_cfg.base_addr_high;
+   869		}
+   870	
+   871		pld_pcie_populate_shadow_v3_cfg(&cfg, config);
+   872	
+   873		switch (mode) {
+   874		case PLD_FTM:
+   875			cnss_mode = CNSS_FTM;
+   876			break;
+   877		case PLD_EPPING:
+   878			cnss_mode = CNSS_EPPING;
+   879			break;
+   880		default:
+   881			cnss_mode = CNSS_MISSION;
+   882			break;
+   883		}
+   884		return cnss_wlan_enable(dev, &cfg, cnss_mode, host_version);
+   885	}
+   886	
+   887	int pld_pcie_wlan_disable(struct device *dev, enum pld_driver_mode mode)
+   888	{
+   889		return cnss_wlan_disable(dev, CNSS_OFF);
+   890	}
+   891	
+   892	int pld_pcie_get_fw_files_for_target(struct device *dev,
+   893					     struct pld_fw_files *pfw_files,
+   894					     u32 target_type, u32 target_version)
+   895	{
+   896		int ret = 0;
+   897		struct cnss_fw_files cnss_fw_files;
+   898	
+   899		if (!pfw_files)
+   900			return -ENODEV;
+   901	
+   902		memset(pfw_files, 0, sizeof(*pfw_files));
+   903	
+   904		ret = cnss_get_fw_files_for_target(dev, &cnss_fw_files,
+   905						   target_type, target_version);
+   906		if (ret)
+   907			return ret;
+   908	
+   909		scnprintf(pfw_files->image_file, PLD_MAX_FILE_NAME, PREFIX "%s",
+   910			  cnss_fw_files.image_file);
+   911		scnprintf(pfw_files->board_data, PLD_MAX_FILE_NAME, PREFIX "%s",
+   912			  cnss_fw_files.board_data);
+   913		scnprintf(pfw_files->otp_data, PLD_MAX_FILE_NAME, PREFIX "%s",
+   914			  cnss_fw_files.otp_data);
+   915		scnprintf(pfw_files->utf_file, PLD_MAX_FILE_NAME, PREFIX "%s",
+   916			  cnss_fw_files.utf_file);
+   917		scnprintf(pfw_files->utf_board_data, PLD_MAX_FILE_NAME, PREFIX "%s",
+   918			  cnss_fw_files.utf_board_data);
+   919		scnprintf(pfw_files->epping_file, PLD_MAX_FILE_NAME, PREFIX "%s",
+   920			  cnss_fw_files.epping_file);
+   921		scnprintf(pfw_files->evicted_data, PLD_MAX_FILE_NAME, PREFIX "%s",
+   922			  cnss_fw_files.evicted_data);
+   923	
+   924		return 0;
+   925	}
+   926	
+   927	int pld_pcie_get_platform_cap(struct device *dev, struct pld_platform_cap *cap)
+   928	{
+   929		int ret = 0;
+   930		struct cnss_platform_cap cnss_cap;
+   931	
+   932		if (!cap)
+   933			return -ENODEV;
+   934	
+   935		ret = cnss_get_platform_cap(dev, &cnss_cap);
+   936		if (ret)
+   937			return ret;
+   938	
+   939		memcpy(cap, &cnss_cap, sizeof(*cap));
+   940		return 0;
+   941	}
+   942	
+   943	int pld_pcie_get_soc_info(struct device *dev, struct pld_soc_info *info)
+   944	{
+   945		int ret = 0, i;
+   946		struct cnss_soc_info cnss_info = {0};
+   947	
+   948		if (!info)
+   949			return -ENODEV;
+   950	
+   951		ret = cnss_get_soc_info(dev, &cnss_info);
+   952		if (ret)
+   953			return ret;
+   954	
+   955		info->v_addr = cnss_info.va;
+   956		info->p_addr = cnss_info.pa;
+   957		info->chip_id = cnss_info.chip_id;
+   958		info->chip_family = cnss_info.chip_family;
+   959		info->board_id = cnss_info.board_id;
+   960		info->soc_id = cnss_info.soc_id;
+   961		info->fw_version = cnss_info.fw_version;
+   962		strscpy(info->fw_build_timestamp, cnss_info.fw_build_timestamp,
+   963			sizeof(info->fw_build_timestamp));
+   964		info->device_version.family_number =
+   965			cnss_info.device_version.family_number;
+   966		info->device_version.device_number =
+   967			cnss_info.device_version.device_number;
+   968		info->device_version.major_version =
+   969			cnss_info.device_version.major_version;
+   970		info->device_version.minor_version =
+   971			cnss_info.device_version.minor_version;
+   972		for (i = 0; i < PLD_MAX_DEV_MEM_NUM; i++) {
+   973			info->dev_mem_info[i].start = cnss_info.dev_mem_info[i].start;
+   974			info->dev_mem_info[i].size = cnss_info.dev_mem_info[i].size;
+   975		}

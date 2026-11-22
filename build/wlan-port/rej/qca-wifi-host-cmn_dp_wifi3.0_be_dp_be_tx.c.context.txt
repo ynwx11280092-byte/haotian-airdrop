@@ -1,0 +1,91 @@
+######## FILE: qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c
+######## REJ:
+--- qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c
++++ qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c
+@@ -1901,7 +1990,8 @@ dp_tx_hw_enqueue_be(struct dp_soc *soc, struct dp_vdev *vdev,
+ 
+ 	hal_tx_desc_cached = (void *)cached_desc;
+ 
+-	if (dp_sawf_tag_valid_get(tx_desc->nbuf)) {
++	if (!dp_tx_desc_is_passthru(tx_desc) &&
++	    dp_sawf_tag_valid_get(tx_desc->nbuf)) {
+ 		dp_sawf_config_be(soc, hal_tx_desc_cached,
+ 				  &fw_metadata, tx_desc, msdu_info);
+ 	}
+@@ -1930,9 +2020,10 @@ dp_tx_hw_enqueue_be(struct dp_soc *soc, struct dp_vdev *vdev,
+ 		hal_tx_desc_set_to_fw(hal_tx_desc_cached, 1);
+ 
+ 	/* verify checksum offload configuration*/
+-	if ((qdf_nbuf_get_tx_cksum(tx_desc->nbuf) ==
++	if (!dp_tx_desc_is_passthru(tx_desc) &&
++	    ((qdf_nbuf_get_tx_cksum(tx_desc->nbuf) ==
+ 				   QDF_NBUF_TX_CKSUM_TCP_UDP) ||
+-	      qdf_nbuf_is_tso(tx_desc->nbuf)) {
++	     qdf_nbuf_is_tso(tx_desc->nbuf))) {
+ 		hal_tx_desc_set_l3_checksum_en(hal_tx_desc_cached, 1);
+ 		hal_tx_desc_set_l4_checksum_en(hal_tx_desc_cached, 1);
+ 	}
+@@ -1945,10 +2036,12 @@ dp_tx_hw_enqueue_be(struct dp_soc *soc, struct dp_vdev *vdev,
+ 	if (tid != HTT_TX_EXT_TID_INVALID)
+ 		hal_tx_desc_set_hlos_tid(hal_tx_desc_cached, tid);
+ 
+-	dp_tx_set_min_rates_for_critical_frames(soc, hal_tx_desc_cached,
+-						tx_desc->nbuf);
+-	dp_tx_set_particular_tx_queue(soc, hal_tx_desc_cached,
+-				      tx_desc->nbuf);
++	if (!dp_tx_desc_is_passthru(tx_desc)) {
++		dp_tx_set_min_rates_for_critical_frames(soc, hal_tx_desc_cached,
++							tx_desc->nbuf);
++		dp_tx_set_particular_tx_queue(soc, hal_tx_desc_cached,
++					      tx_desc->nbuf);
++	}
+ 
+ 	if (!dp_tx_desc_set_ktimestamp(vdev, tx_desc))
+ 		dp_tx_desc_set_timestamp(tx_desc);
+@@ -1961,7 +2054,8 @@ dp_tx_hw_enqueue_be(struct dp_soc *soc, struct dp_vdev *vdev,
+ 		DP_STATS_INC(vdev,
+ 			     tx_i[msdu_info->xmit_type].dropped.enqueue_fail,
+ 			     1);
+-		dp_sawf_tx_enqueue_fail_peer_stats(soc, tx_desc);
++		if (!dp_tx_desc_is_passthru(tx_desc))
++			dp_sawf_tx_enqueue_fail_peer_stats(soc, tx_desc);
+ 		return status;
+ 	}
+ 
+@@ -1972,21 +2066,27 @@ dp_tx_hw_enqueue_be(struct dp_soc *soc, struct dp_vdev *vdev,
+ 		DP_STATS_INC(vdev,
+ 			     tx_i[msdu_info->xmit_type].dropped.enqueue_fail,
+ 			     1);
+-		dp_sawf_tx_enqueue_fail_peer_stats(soc, tx_desc);
++		if (!dp_tx_desc_is_passthru(tx_desc))
++			dp_sawf_tx_enqueue_fail_peer_stats(soc, tx_desc);
+ 		goto ring_access_fail;
+ 	}
+ 
+ 	tx_desc->flags |= DP_TX_DESC_FLAG_QUEUED_TX;
+-	dp_vdev_peer_stats_update_protocol_cnt_tx(vdev, tx_desc->nbuf);
++	if (!dp_tx_desc_is_passthru(tx_desc))
++		dp_vdev_peer_stats_update_protocol_cnt_tx(vdev, tx_desc->nbuf);
+ 
+ 	/* Sync cached descriptor with HW */
+ 	hal_tx_desc_sync(hal_tx_desc_cached, hal_tx_desc, num_desc_bytes);
+ 
+-	dp_tx_update_proto_stats(vdev, tx_desc->nbuf, ring_id,
+-				 TX_ENQUEUE_HW);
++	/* Raw control traffic is submitted immediately, without Ethernet policy. */
++	if (!dp_tx_desc_is_passthru(tx_desc)) {
++		dp_tx_update_proto_stats(vdev, tx_desc->nbuf, ring_id,
++					 TX_ENQUEUE_HW);
+ 
+-	coalesce = dp_tx_attempt_coalescing_wrapper(soc, vdev, tx_desc, tid,
+-						    msdu_info, ring_id);
++		coalesce = dp_tx_attempt_coalescing_wrapper(soc, vdev, tx_desc,
++							    tid, msdu_info,
++							    ring_id);
++	}
+ 
+ 	if (qdf_unlikely(dp_tx_pkt_tracepoints_enabled())) {
+ 		hp = hal_srng_src_get_hp(hal_ring_hdl);
+
+######## CURRENT FILE CONTEXT:
+---- hunk header: 3:@@ -1901,7 +1990,8 @@ dp_tx_hw_enqueue_be(struct dp_soc *soc, struct dp_vdev *vdev,

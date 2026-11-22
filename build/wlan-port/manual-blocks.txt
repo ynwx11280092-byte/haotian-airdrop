@@ -1,0 +1,418 @@
+
+######## qca-wifi-host-cmn_dp_wifi3.0_be_dp_be_tx.c
+--- block @1938
+PRE:
+	bank_config->encap_type = vdev->tx_encap_type;
+
+	/* Only valid for raw frames. Needs work for RAW mode */
+	if (vdev->tx_encap_type == htt_cmn_pkt_type_raw) {
+		bank_config->encrypt_type = sec_type_map[vdev->sec_type];
+	} else {
+		bank_config->encrypt_type = 0;
+	}
+
+	bank_config->src_buffer_swap = 0;
+	bank_config->link_meta_swap = 0;
+
+OURS:
+	if ((vdev->search_type == HAL_TX_ADDR_INDEX_SEARCH) &&
+	    vdev->opmode == wlan_op_mode_sta) {
+THEIRS:
+	if (vdev->search_type == HAL_TX_ADDR_INDEX_SEARCH &&
+	    (vdev->opmode == wlan_op_mode_sta
+#ifdef DRIVER_PASSTHRU_DP
+	     || vdev->opmode == wlan_op_mode_passthru
+#endif
+	    )) {
+POST:
+		bank_config->index_lookup_enable = 1;
+		bank_config->mcast_pkt_ctrl = HAL_TX_MCAST_CTRL_MEC_NOTIFY;
+		bank_config->addrx_en = 0;
+<<<<<<<
+		bank_config->addry_en = 0;
+	} else {
+		bank_config->index_lookup_enable = 0;
+		bank_config->mcast_pkt_ctrl = HAL_TX_MCAST_CTRL_FW_EXCEPTION;
+		bank_config->addrx_en =
+			(vdev->hal_desc_addr_search_flags &
+			 HAL_TX_DESC_ADDRX_EN) ? 1 : 0;
+		bank_config->addry_en =
+--- block @1952
+PRE:
+	    vdev->opmode == wlan_op_mode_sta) {
+=======
+	if (vdev->search_type == HAL_TX_ADDR_INDEX_SEARCH &&
+	    (vdev->opmode == wlan_op_mode_sta
+#ifdef DRIVER_PASSTHRU_DP
+	     || vdev->opmode == wlan_op_mode_passthru
+#endif
+	    )) {
+>>>>>>>
+		bank_config->index_lookup_enable = 1;
+		bank_config->mcast_pkt_ctrl = HAL_TX_MCAST_CTRL_MEC_NOTIFY;
+		bank_config->addrx_en = 0;
+OURS:
+		bank_config->addry_en = 0;
+	} else {
+		bank_config->index_lookup_enable = 0;
+		bank_config->mcast_pkt_ctrl = HAL_TX_MCAST_CTRL_FW_EXCEPTION;
+		bank_config->addrx_en =
+			(vdev->hal_desc_addr_search_flags &
+			 HAL_TX_DESC_ADDRX_EN) ? 1 : 0;
+		bank_config->addry_en =
+			(vdev->hal_desc_addr_search_flags &
+THEIRS:
+	if (tid != HTT_TX_EXT_TID_INVALID)
+		hal_tx_desc_set_hlos_tid(hal_tx_desc_cached, tid);
+
+	if (!dp_tx_desc_is_passthru(tx_desc)) {
+		dp_tx_set_min_rates_for_critical_frames(soc, hal_tx_desc_cached,
+							tx_desc->nbuf);
+		dp_tx_set_particular_tx_queue(soc, hal_tx_desc_cached,
+					      tx_desc->nbuf);
+	}
+
+	if (!dp_tx_desc_set_ktimestamp(vdev, tx_desc))
+		dp_tx_desc_set_timestamp(tx_desc);
+POST:
+<<<<<<<
+			 HAL_TX_DESC_ADDRY_EN) ? 1 : 0;
+=======
+		DP_STATS_INC(vdev,
+			     tx_i[msdu_info->xmit_type].dropped.enqueue_fail,
+			     1);
+		if (!dp_tx_desc_is_passthru(tx_desc))
+			dp_sawf_tx_enqueue_fail_peer_stats(soc, tx_desc);
+		goto ring_access_fail;
+>>>>>>>
+	}
+
+--- block @1976
+PRE:
+		hal_tx_desc_set_hlos_tid(hal_tx_desc_cached, tid);
+
+	if (!dp_tx_desc_is_passthru(tx_desc)) {
+		dp_tx_set_min_rates_for_critical_frames(soc, hal_tx_desc_cached,
+							tx_desc->nbuf);
+		dp_tx_set_particular_tx_queue(soc, hal_tx_desc_cached,
+					      tx_desc->nbuf);
+	}
+
+	if (!dp_tx_desc_set_ktimestamp(vdev, tx_desc))
+		dp_tx_desc_set_timestamp(tx_desc);
+>>>>>>>
+OURS:
+			 HAL_TX_DESC_ADDRY_EN) ? 1 : 0;
+THEIRS:
+		DP_STATS_INC(vdev,
+			     tx_i[msdu_info->xmit_type].dropped.enqueue_fail,
+			     1);
+		if (!dp_tx_desc_is_passthru(tx_desc))
+			dp_sawf_tx_enqueue_fail_peer_stats(soc, tx_desc);
+		goto ring_access_fail;
+POST:
+	}
+
+<<<<<<<
+	bank_config->mesh_enable = vdev->mesh_vdev ? 1 : 0;
+=======
+	tx_desc->flags |= DP_TX_DESC_FLAG_QUEUED_TX;
+	if (!dp_tx_desc_is_passthru(tx_desc))
+		dp_vdev_peer_stats_update_protocol_cnt_tx(vdev, tx_desc->nbuf);
+>>>>>>>
+
+	bank_config->dscp_tid_map_id = vdev->dscp_tid_map_id;
+
+--- block @1988
+PRE:
+<<<<<<<
+			 HAL_TX_DESC_ADDRY_EN) ? 1 : 0;
+=======
+		DP_STATS_INC(vdev,
+			     tx_i[msdu_info->xmit_type].dropped.enqueue_fail,
+			     1);
+		if (!dp_tx_desc_is_passthru(tx_desc))
+			dp_sawf_tx_enqueue_fail_peer_stats(soc, tx_desc);
+		goto ring_access_fail;
+>>>>>>>
+	}
+
+OURS:
+	bank_config->mesh_enable = vdev->mesh_vdev ? 1 : 0;
+THEIRS:
+	tx_desc->flags |= DP_TX_DESC_FLAG_QUEUED_TX;
+	if (!dp_tx_desc_is_passthru(tx_desc))
+		dp_vdev_peer_stats_update_protocol_cnt_tx(vdev, tx_desc->nbuf);
+POST:
+
+	bank_config->dscp_tid_map_id = vdev->dscp_tid_map_id;
+
+<<<<<<<
+	/* Disabling vdev id check for now. Needs revist. */
+	bank_config->vdev_id_check_en = be_vdev->vdev_id_check_en;
+=======
+	/* Raw control traffic is submitted immediately, without Ethernet policy. */
+	if (!dp_tx_desc_is_passthru(tx_desc)) {
+		dp_tx_update_proto_stats(vdev, tx_desc->nbuf, ring_id,
+					 TX_ENQUEUE_HW);
+>>>>>>>
+--- block @1998
+PRE:
+	}
+
+<<<<<<<
+	bank_config->mesh_enable = vdev->mesh_vdev ? 1 : 0;
+=======
+	tx_desc->flags |= DP_TX_DESC_FLAG_QUEUED_TX;
+	if (!dp_tx_desc_is_passthru(tx_desc))
+		dp_vdev_peer_stats_update_protocol_cnt_tx(vdev, tx_desc->nbuf);
+>>>>>>>
+
+	bank_config->dscp_tid_map_id = vdev->dscp_tid_map_id;
+
+OURS:
+	/* Disabling vdev id check for now. Needs revist. */
+	bank_config->vdev_id_check_en = be_vdev->vdev_id_check_en;
+THEIRS:
+	/* Raw control traffic is submitted immediately, without Ethernet policy. */
+	if (!dp_tx_desc_is_passthru(tx_desc)) {
+		dp_tx_update_proto_stats(vdev, tx_desc->nbuf, ring_id,
+					 TX_ENQUEUE_HW);
+POST:
+
+<<<<<<<
+	bank_config->pmac_id = vdev->lmac_id;
+}
+=======
+		coalesce = dp_tx_attempt_coalescing_wrapper(soc, vdev, tx_desc,
+							    tid, msdu_info,
+							    ring_id);
+	}
+>>>>>>>
+
+int dp_tx_get_bank_profile(struct dp_soc_be *be_soc,
+--- block @2008
+PRE:
+	bank_config->dscp_tid_map_id = vdev->dscp_tid_map_id;
+
+<<<<<<<
+	/* Disabling vdev id check for now. Needs revist. */
+	bank_config->vdev_id_check_en = be_vdev->vdev_id_check_en;
+=======
+	/* Raw control traffic is submitted immediately, without Ethernet policy. */
+	if (!dp_tx_desc_is_passthru(tx_desc)) {
+		dp_tx_update_proto_stats(vdev, tx_desc->nbuf, ring_id,
+					 TX_ENQUEUE_HW);
+>>>>>>>
+
+OURS:
+	bank_config->pmac_id = vdev->lmac_id;
+}
+THEIRS:
+		coalesce = dp_tx_attempt_coalescing_wrapper(soc, vdev, tx_desc,
+							    tid, msdu_info,
+							    ring_id);
+	}
+POST:
+
+int dp_tx_get_bank_profile(struct dp_soc_be *be_soc,
+			   struct dp_vdev_be *be_vdev)
+{
+	char *temp_str = "";
+	bool found_match = false;
+	int bank_id = DP_BE_INVALID_BANK_ID;
+	int i;
+	int unconfigured_slot = DP_BE_INVALID_BANK_ID;
+	int zero_ref_count_slot = DP_BE_INVALID_BANK_ID;
+	union hal_tx_bank_config vdev_config = {0};
+
+
+######## qca-wifi-host-cmn_dp_wifi3.0_dp_main.c
+--- block @7073
+PRE:
+	/* delete this peer from the list */
+	qdf_spin_unlock_bh(&soc->inactive_vdev_list_lock);
+
+	dp_cfg_event_record_vdev_evt(soc, DP_CFG_EVENT_VDEV_UNREF_DEL,
+				     vdev);
+	wlan_minidump_remove(vdev, sizeof(*vdev), soc->ctrl_psoc,
+			     WLAN_MD_DP_VDEV, "dp_vdev");
+	qdf_mem_common_free(vdev);
+	vdev = NULL;
+
+	if (vdev_delete_cb)
+		vdev_delete_cb(vdev_delete_context);
+OURS:
+
+	if (vdev_del_notify)
+		vdev_del_notify(vdev_del_noitfy_ctx);
+THEIRS:
+#ifdef DRIVER_PASSTHRU_OWNER
+	/* Not detach acceptance or ID removal: memory and both callbacks done.
+	 * No later soc access; outer teardown still joins ref-put caller tails.
+	 */
+	if (receipt_owed)
+		dp_passthru_receipts_end(&soc->passthru_receipts);
+#endif
+POST:
+}
+
+qdf_export_symbol(dp_vdev_unref_delete);
+
+void dp_peer_unref_delete(struct dp_peer *peer, enum dp_mod_id mod_id)
+{
+	struct dp_vdev *vdev = peer->vdev;
+	struct dp_pdev *pdev = vdev->pdev;
+	struct dp_soc *soc = pdev->soc;
+	uint16_t peer_id;
+	struct dp_peer *tmp_peer;
+	bool found = false;
+
+######## qca-wifi-host-cmn_dp_wifi3.0_dp_tx.c
+--- block @1463
+PRE:
+		qdf_nbuf_t nbuf, struct dp_tx_msdu_info_s *msdu_info,
+		uint8_t desc_pool_id)
+{
+	struct dp_tx_desc_s *tx_desc;
+	struct dp_tx_ext_desc_elem_s *msdu_ext_desc;
+	struct dp_pdev *pdev = vdev->pdev;
+	struct dp_soc *soc = pdev->soc;
+
+	if (dp_tx_limit_check(vdev, nbuf))
+		return NULL;
+
+	/* Allocate software Tx descriptor */
+OURS:
+	if (nbuf->protocol == QDF_NBUF_TRAC_EAPOL_ETH_TYPE)
+THEIRS:
+	if (!dp_tx_vdev_is_passthru(vdev) &&
+	    qdf_unlikely(nbuf->protocol == QDF_NBUF_TRAC_EAPOL_ETH_TYPE))
+POST:
+		tx_desc = dp_tx_spcl_desc_alloc(soc, desc_pool_id);
+	else
+		tx_desc = dp_tx_desc_alloc(soc, desc_pool_id);
+
+	if (!tx_desc) {
+		DP_STATS_INC(vdev,
+			     tx_i[msdu_info->xmit_type].dropped.desc_na.num, 1);
+		return NULL;
+	}
+	dp_tx_tso_seg_history_add(soc, msdu_info->u.tso_info.curr_seg,
+				  nbuf, tx_desc->id, DP_TX_DESC_COOKIE);
+
+--- block @3299
+PRE:
+					    DP_TCL_METADATA_TYPE_PEER_BASED);
+		DP_TX_TCL_METADATA_PEER_ID_SET(htt_tcl_metadata,
+					       peer_id);
+		dp_tx_bypass_reinjection(soc, tx_desc, tx_exc_metadata);
+	} else
+		htt_tcl_metadata = vdev->htt_tcl_metadata;
+
+	dp_tx_opt_dp_wifi_ctrl_process(msdu_info, &htt_tcl_metadata);
+
+	if (msdu_info->exception_fw)
+		DP_TX_TCL_METADATA_VALID_HTT_SET(htt_tcl_metadata, 1);
+
+OURS:
+	dp_tx_desc_update_fast_comp_flag(soc, tx_desc,
+					 !pdev->enhanced_stats_en);
+THEIRS:
+	if (!dp_tx_desc_is_passthru(tx_desc)) {
+		dp_tx_desc_update_fast_flag(soc, tx_desc,
+					    !pdev->enhanced_stats_en);
+POST:
+
+		dp_tx_desc_update_bcast_flag(soc, tx_desc, nbuf);
+
+		dp_tx_update_mesh_flags(soc, vdev, tx_desc);
+	}
+
+	if (qdf_unlikely(msdu_info->frm_type == dp_tx_frm_rmnet))
+		paddr = dp_tx_rmnet_nbuf_map(msdu_info, tx_desc);
+	else
+		paddr =  dp_tx_nbuf_map(vdev, tx_desc, nbuf);
+
+	if (!paddr) {
+
+######## qcacld-3.0_components_cmn_services_policy_mgr_src_wlan_policy_mgr_get_set_utils.c
+--- block @5550
+PRE:
+	qdf_mutex_release(&pm_ctx->qdf_conc_list_lock);
+
+	if (mode != QDF_NAN_DISC_MODE &&
+	    pm_ctx->dp_cbacks.hdd_v2_flow_pool_unmap)
+		pm_ctx->dp_cbacks.hdd_v2_flow_pool_unmap(session_id);
+
+	if (mode == QDF_NDI_MODE &&
+	    pm_ctx->hdd_cbacks.wlan_hdd_indicate_active_ndp_cnt)
+		pm_ctx->hdd_cbacks.wlan_hdd_indicate_active_ndp_cnt(
+				psoc, session_id, session_count);
+
+	policy_mgr_debug("No.# of active sessions for mode %d = %d",
+OURS:
+			 mode, session_count);
+THEIRS:
+		mode, pm_ctx->no_of_active_sessions[mode]);
+
+	if (mode == QDF_PASSTHRU_MODE) {
+		if (QDF_IS_STATUS_ERROR(policy_mgr_incr_connection_count(psoc, session_id, mode))) {
+			pm_ctx->no_of_active_sessions[mode]--;
+			qdf_mutex_release(&pm_ctx->qdf_conc_list_lock);
+			if (pm_ctx->dp_cbacks.hdd_v2_flow_pool_unmap)
+				pm_ctx->dp_cbacks.hdd_v2_flow_pool_unmap(session_id);
+			return;
+		}
+	} else {
+		policy_mgr_incr_connection_count(psoc, session_id, mode);
+	}
+POST:
+
+	/* Notify tdls */
+	if (pm_ctx->tdls_cbacks.tdls_notify_decrement_session)
+		pm_ctx->tdls_cbacks.tdls_notify_decrement_session(psoc);
+	/* Enable LRO/GRO if there no concurrency */
+	if ((policy_mgr_get_connection_count(psoc) == 0) ||
+	    ((policy_mgr_mode_specific_connection_count(psoc,
+							PM_STA_MODE,
+							NULL) == 1) &&
+	     (policy_mgr_get_beaconing_mode_count(psoc, NULL) == 0) &&
+	     (policy_mgr_mode_specific_connection_count(psoc,
+							PM_P2P_CLIENT_MODE,
+
+######## qcacld-3.0_core_hdd_src_wlan_hdd_driver_ops.c
+--- block @1161
+PRE:
+	if (!hdd_wait_for_debugfs_threads_completion())
+		hdd_warn("Debugfs threads are still active attempting driver unload anyway");
+
+	if (hdd_get_conparam() == QDF_GLOBAL_EPPING_MODE) {
+		ret = hdd_wlan_stop_modules(hdd_ctx, false);
+#ifdef DRIVER_PASSTHRU_RUNTIME
+		if (ret)
+			return ret;
+#endif
+		qdf_nbuf_deinit_replenish_timer();
+	} else {
+		hdd_thermal_mitigation_unregister(hdd_ctx, dev);
+OURS:
+		hdd_wlan_exit(hdd_ctx);
+THEIRS:
+		hdd_ddr_bw_mitigation_unregister(hdd_ctx, dev);
+		ret = hdd_wlan_exit(hdd_ctx);
+		if (ret)
+			return ret;
+POST:
+	}
+
+	hdd_context_destroy(hdd_ctx);
+
+	cds_set_driver_in_bad_state(false);
+	cds_set_unload_in_progress(false);
+
+	ucfg_dp_prealloc_deinit();
+
+	pr_info("%s: Driver De-initialized\n", WLAN_MODULE_NAME);
+	return 0;
+}

@@ -1,0 +1,228 @@
+From 67170bd1d0672ab780414f76959f5a40f160ca2f Mon Sep 17 00:00:00 2001
+From: build <b@local>
+Date: Wed, 18 Nov 2026 07:14:20 +0000
+Subject: [PATCH 3/3] adapt houji passthru code to pandora APIs; stub
+ cnss_get_wlan_tsf_gpio
+
+- hdd_validate_channel_and_bandwidth ccfs1, policy_mgr_incr_active_session flow-pool arg,
+  policy_mgr_2_freq_same_mac_in_dbs(psoc), wlan_cfg_get_num_tx_desc pool arg,
+  vdev_del_notify cb signature, dp_vdev_register_wifi3 return type, AST cache helper rename,
+  generic RX buf SMMU lock helpers, Kbuild drops houji-only -include
+- pld_pcie_get_tsf_gpio: shipping cnss2.ko does not export cnss_get_wlan_tsf_gpio
+- .gitignore build artifacts
+---
+ .gitignore                                          | 13 +++++++++++++
+ qca-wifi-host-cmn/dp/wifi3.0/dp_main.c              |  2 +-
+ qca-wifi-host-cmn/dp/wifi3.0/dp_peer.c              |  5 +++--
+ qca-wifi-host-cmn/dp/wifi3.0/dp_rx_err.c            |  6 +++---
+ qca-wifi-host-cmn/dp/wifi3.0/dp_tx_flow_control.c   |  3 ++-
+ .../umac/mlme/vdev_mgr/core/src/vdev_mlme_sm.h      |  7 -------
+ qcacld-3.0/Kbuild                                   |  1 -
+ .../policy_mgr/src/wlan_policy_mgr_get_set_utils.c  |  2 +-
+ .../components/dp/core/src/wlan_dp_passthru.c       | 10 +++++++++-
+ qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c |  8 ++++----
+ qcacld-3.0/core/pld/src/pld_pcie.c                  |  5 ++++-
+ 11 files changed, 40 insertions(+), 22 deletions(-)
+ create mode 100644 .gitignore
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..c55b3cf
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,13 @@
++*.o
++*.ko
++*.a
++*.mod
++*.mod.c
++.*.cmd
++*.symvers
++modules.order
++*.dwo
++*.su
++.tmp_*
++*.lds
++*.d
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c b/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+index cc3574d..efc4d5f 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+@@ -5876,7 +5876,7 @@ dp_vdev_register_wifi3(struct cdp_soc_t *soc_hdl, uint8_t vdev_id,
+ 	/* The legacy void CDP wrapper cannot express PASSTHRU ownership. */
+ 	if (vdev->opmode == wlan_op_mode_passthru) {
+ 		dp_vdev_unref_delete(soc, vdev, DP_MOD_ID_CDP);
+-		return QDF_STATUS_E_NOSUPPORT;
++		return NULL;
+ 	}
+ #endif
+ 	vdev->osif_vdev = osif_vdev;
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/dp_peer.c b/qca-wifi-host-cmn/dp/wifi3.0/dp_peer.c
+index a1106f4..28c3865 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_peer.c
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_peer.c
+@@ -3454,8 +3454,9 @@ dp_rx_peer_map_handler(struct dp_soc *soc, uint16_t peer_id,
+ 					peer->txrx_peer->bss_peer = 1;
+ 				vdev->bss_ast_hash = ast_hash;
+ 				vdev->bss_ast_idx = hw_peer_id;
+-				dp_tx_ppeds_cfg_astidx_cache_mapping(soc, vdev,
+-								     peer_map);
++				dp_tx_cfg_astidx_cache_mapping_wrapper(soc,
++								       peer,
++								       vdev);
+ 			}
+ #endif
+ #ifdef DRIVER_PASSTHRU_OWNER
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/dp_rx_err.c b/qca-wifi-host-cmn/dp/wifi3.0/dp_rx_err.c
+index ccc286d..5f4f22a 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_rx_err.c
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_rx_err.c
+@@ -2034,15 +2034,15 @@ marked_miss:
+ 	dp_rx_err_ring_record_entry(soc, hbi.paddr, hbi.sw_cookie,
+ 				    hal_rx_ret_buf_manager_get(soc->hal_soc,
+ 							       ring_desc));
+-	dp_ipa_rx_buf_smmu_mapping_lock(soc);
++	dp_rx_buf_smmu_mapping_lock(soc);
+ 	bad = 7;
+ 	if (rx_desc->unmapped) {
+-		dp_ipa_rx_buf_smmu_mapping_unlock(soc);
++		dp_rx_buf_smmu_mapping_unlock(soc);
+ 		goto legacy;
+ 	}
+ 	dp_rx_nbuf_unmap_pool(soc, pool, nbuf);
+ 	rx_desc->unmapped = 1;
+-	dp_ipa_rx_buf_smmu_mapping_unlock(soc);
++	dp_rx_buf_smmu_mapping_unlock(soc);
+ 
+ 	/* This helper clears nbuf/in_use and owns the free-list insertion. */
+ 	dp_rx_add_to_free_desc_list(&pdev->free_list_head,
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/dp_tx_flow_control.c b/qca-wifi-host-cmn/dp/wifi3.0/dp_tx_flow_control.c
+index 8b98a15..ea79a7f 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_tx_flow_control.c
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_tx_flow_control.c
+@@ -581,7 +581,8 @@ struct dp_tx_desc_pool_s *dp_tx_create_flow_pool(struct dp_soc *soc,
+ QDF_STATUS dp_tx_passthru_pool_map(struct dp_vdev *vdev)
+ {
+ 	struct dp_soc *soc = vdev->pdev->soc;
+-	uint32_t count = wlan_cfg_get_num_tx_desc(soc->wlan_cfg_ctx);
++	uint32_t count = wlan_cfg_get_num_tx_desc(soc->wlan_cfg_ctx,
++						  DP_TXDESC_POOL_ANY);
+ 	struct dp_tx_desc_pool_s *pool;
+ 
+ 	if (!count || vdev->vdev_id >= MAX_TXDESC_POOLS)
+diff --git a/qca-wifi-host-cmn/umac/mlme/vdev_mgr/core/src/vdev_mlme_sm.h b/qca-wifi-host-cmn/umac/mlme/vdev_mgr/core/src/vdev_mlme_sm.h
+index d790d76..5ddc8f6 100644
+--- a/qca-wifi-host-cmn/umac/mlme/vdev_mgr/core/src/vdev_mlme_sm.h
++++ b/qca-wifi-host-cmn/umac/mlme/vdev_mgr/core/src/vdev_mlme_sm.h
+@@ -885,13 +885,6 @@ static inline void mlme_vdev_cmd_mutex_acquire(struct vdev_mlme_obj *vdev_mlme)
+ static inline void mlme_vdev_cmd_mutex_release(struct vdev_mlme_obj *vdev_mlme)
+ {
+ }
+-#ifdef DRIVER_PASSTHRU_SESSION
+-static inline void mlme_vdev_init_down(struct vdev_mlme_obj *vdev_mlme)
+-{
+-	if (vdev_mlme->ops && vdev_mlme->ops->mlme_vdev_init_down)
+-		vdev_mlme->ops->mlme_vdev_init_down(vdev_mlme);
+-}
+-#endif
+ 
+ 
+ #endif
+diff --git a/qcacld-3.0/Kbuild b/qcacld-3.0/Kbuild
+index 43ce7cf..cf8358a 100644
+--- a/qcacld-3.0/Kbuild
++++ b/qcacld-3.0/Kbuild
+@@ -5369,7 +5369,6 @@ CLEAN_DIRS := $(addsuffix *.o,$(sort $(OBJS_DIRS))) \
+ clean-files := $(CLEAN_DIRS)
+ 
+ # Build-only declaration closure: retain -Werror/-Wmissing-prototypes.
+-CFLAGS_components/umac/mlme/connection_mgr/core/src/wlan_cm_vdev_connect.o += -include $(src)/offline-build-declarations.h
+ 
+ # Experimental CDP raw datapath; never enables the full HDD/Wonder backend.
+ ifeq ($(CONFIG_DRIVER_PASSTHRU_OWNER),y)
+diff --git a/qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c b/qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c
+index 89d348f..cd6605b 100644
+--- a/qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c
++++ b/qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c
+@@ -10890,7 +10890,7 @@ policy_mgr_allow_passthru_concurrency(struct wlan_objmgr_psoc *psoc,
+ 	 * STA connection in case of non-DBS hw.
+ 	 */
+ 	if (mode == PM_STA_MODE &&
+-	    policy_mgr_2_freq_same_mac_in_dbs(policy_mgr_get_context(psoc),
++	    policy_mgr_2_freq_same_mac_in_dbs(psoc,
+ 					      pm_conc_connection_list[list[0]].freq,
+ 					      ch_freq)) {
+ 		policy_mgr_debug("STA CSA to %dMHz not allowed", ch_freq);
+diff --git a/qcacld-3.0/components/dp/core/src/wlan_dp_passthru.c b/qcacld-3.0/components/dp/core/src/wlan_dp_passthru.c
+index 6be21ad..f376837 100644
+--- a/qcacld-3.0/components/dp/core/src/wlan_dp_passthru.c
++++ b/qcacld-3.0/components/dp/core/src/wlan_dp_passthru.c
+@@ -75,7 +75,15 @@ static QDF_STATUS wlan_dp_passthru_rx(void *context, qdf_nbuf_t head)
+ }
+ 
+ /* No parent lookup, owner release, completion signal or freeing here. */
+-static void wlan_dp_passthru_notify(void *context)
++static void wlan_dp_passthru_notify_ctx(void *context);
++
++static void wlan_dp_passthru_notify(struct ol_osif_vdev_t *osif,
++				    struct cdp_vdev *vdev)
++{
++	wlan_dp_passthru_notify_ctx((void *)osif);
++}
++
++static void wlan_dp_passthru_notify_ctx(void *context)
+ {
+ 	struct wlan_dp_passthru_endpoint *endpoint = context;
+ 
+diff --git a/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c b/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c
+index daa6a26..ab6ce70 100644
+--- a/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c
++++ b/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c
+@@ -219,7 +219,7 @@ static int hdd_pt_control_submit(struct hdd_pt_iface *iface,
+ 		return ret;
+ 	adapter = iface->adapter;
+ 	ret = hdd_validate_channel_and_bandwidth(adapter, params->channel.freq,
+-						 width);
++						 0, width);
+ 	if (ret)
+ 		return ret;
+ 	wlan_reg_set_channel_params_for_pwrmode(iface->hdd->pdev,
+@@ -477,8 +477,8 @@ int hdd_pt_control_finish_start(struct hdd_pt_iface *iface,
+ 	if (!wma || !wma->wmi_handle || !soc)
+ 		return -ENODEV;
+ 	if (hdd_pt_sta_coexist_mode()) {
+-		hdd_info("PT coexist firmware mapping vdev %u mac %u freq %u tx_streams %u",
+-			 vdev_id, wma->interfaces[vdev_id].mac_id,
++		hdd_info("PT coexist firmware mapping vdev %u freq %u tx_streams %u",
++			 vdev_id,
+ 			 wma->interfaces[vdev_id].ch_freq,
+ 			 wma->interfaces[vdev_id].tx_streams);
+ 		if (wma->interfaces[vdev_id].tx_streams < params->tx_rate.nss)
+@@ -540,7 +540,7 @@ int hdd_pt_control_finish_start(struct hdd_pt_iface *iface,
+ 
+ 	if (hdd_pt_sta_coexist_mode() && !iface->policy_registered) {
+ 		policy_mgr_incr_active_session(iface->hdd->psoc,
+-					      QDF_PASSTHRU_MODE, vdev_id);
++					      QDF_PASSTHRU_MODE, vdev_id, true);
+ 		status = policy_mgr_check_conn_with_mode_and_vdev_id(
+ 			iface->hdd->psoc, PM_PASSTHRU_MODE, vdev_id);
+ 		if (QDF_IS_STATUS_ERROR(status))
+diff --git a/qcacld-3.0/core/pld/src/pld_pcie.c b/qcacld-3.0/core/pld/src/pld_pcie.c
+index b4c09ad..75e52a8 100644
+--- a/qcacld-3.0/core/pld/src/pld_pcie.c
++++ b/qcacld-3.0/core/pld/src/pld_pcie.c
+@@ -895,7 +895,10 @@ int pld_pcie_wlan_disable(struct device *dev, enum pld_driver_mode mode)
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+ int pld_pcie_get_tsf_gpio(struct device *dev)
+ {
+-	return cnss_get_wlan_tsf_gpio(dev);
++	/* pandora: the shipping cnss2.ko does not export cnss_get_wlan_tsf_gpio
++	 * (the stock qca_cld3_peach_v2.ko never imports it); no TSF sync GPIO.
++	 */
++	return -EINVAL;
+ }
+ #else
+ int pld_pcie_get_tsf_gpio(struct device *dev)
+-- 
+2.47.3
+

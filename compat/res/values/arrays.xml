@@ -1,0 +1,6 @@
+<resources>
+    <string-array name="xposed_scope">
+        <item>com.miui.mishare.connectivity</item>
+        <item>com.android.intentresolver</item>
+    </string-array>
+</resources>

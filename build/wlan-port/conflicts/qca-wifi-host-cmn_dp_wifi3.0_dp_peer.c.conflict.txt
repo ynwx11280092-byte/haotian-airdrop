@@ -1,0 +1,13 @@
+=== FILE: qca-wifi-host-cmn/dp/wifi3.0/dp_peer.c
+
+<<<<<<<
+=======
+		qdf_spin_unlock_bh(&soc->peer_map_lock);
+#ifdef DRIVER_PASSTHRU_OWNER
+		pt_remote_peer_dp_event(soc->ctrl_psoc, peer->vdev->vdev_id,
+					peer->mac_addr.raw, peer_id,
+					PT_REMOTE_SLOT_INSTALL);
+#endif
+>>>>>>>
+
+---

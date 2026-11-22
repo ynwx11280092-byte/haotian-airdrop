@@ -1,0 +1,6 @@
+id=haotian_airdrop
+name=小米 15 Pro 原生 AirDrop
+version=v1.0.0
+versionCode=10000
+author=haotian-airdrop (port of AdenXie/pandora-airdrop)
+description=小米 15 Pro 原生 AirDrop：iPhone 隔空投送到小米互传，Live Photo 合成动态照片。不修改系统分区。

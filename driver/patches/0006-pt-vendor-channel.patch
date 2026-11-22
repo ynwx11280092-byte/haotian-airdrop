@@ -1,0 +1,55 @@
+diff --git a/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c b/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c
+index 7e9801a..16cf2ae 100644
+--- a/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c
++++ b/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c
+@@ -52,6 +52,10 @@ static bool pt_tx_ampdu;
+ module_param(pt_tx_ampdu, bool, 0400);
+ MODULE_PARM_DESC(pt_tx_ampdu, "Allow outbound TX A-MPDU aggregation up to 64 MPDUs");
+ 
++static bool pt_vendor_chan;
++module_param(pt_vendor_chan, bool, 0400);
++MODULE_PARM_DESC(pt_vendor_chan, "Use the vendor Wondertap channel preparation and 11be request");
++
+ static bool pt_dynamic_rate;
+ module_param(pt_dynamic_rate, bool, 0400);
+ 
+@@ -244,6 +248,13 @@ static int hdd_pt_control_submit(struct hdd_pt_iface *iface,
+ 			params->channel.freq, 0, &channel, REG_CURRENT_PWR_MODE);
+ 	if (channel.ch_width != width)
+ 		return -EOPNOTSUPP;
++	if (pt_vendor_chan && !changing && !hdd_pt_sta_coexist_mode()) {
++		ret = wlan_hdd_change_hw_mode_for_given_chnl(adapter,
++				params->channel.freq,
++				POLICY_MGR_UPDATE_REASON_SET_OPER_CHAN);
++		if (ret)
++			return ret;
++	}
+ 	if (hdd_pt_sta_coexist_mode()) {
+ 		struct hdd_adapter *sta;
+ 		struct wlan_hdd_link_info *link;
+@@ -308,11 +319,20 @@ static int hdd_pt_control_submit(struct hdd_pt_iface *iface,
+ 	request.sec_ch_offset = channel.sec_ch_offset;
+ 	request.center_freq_seg0 = channel.center_freq_seg0;
+ 	request.center_freq_seg1 = channel.center_freq_seg1;
+-	sme_fill_channel_change_request(iface->hdd->mac_handle, &request,
+-				       hdd_pt_vht80(params) ? eCSR_DOT11_MODE_11ac : eCSR_DOT11_MODE_11n);
+-	/* Do not let global PHY policy override the explicit profile. */
+-    request.dot11mode = hdd_pt_vht80(params) ?
+-        MLME_DOT11_MODE_11AC : MLME_DOT11_MODE_11N;
++	if (pt_vendor_chan) {
++		sme_fill_channel_change_request(iface->hdd->mac_handle, &request,
++						eCSR_DOT11_MODE_11be);
++		pr_info("PT_VENDOR_CHAN freq=%u width=%u dot11mode=%u\n",
++			request.target_chan_freq, request.ch_width,
++			request.dot11mode);
++	} else {
++		sme_fill_channel_change_request(iface->hdd->mac_handle, &request,
++				hdd_pt_vht80(params) ? eCSR_DOT11_MODE_11ac :
++							eCSR_DOT11_MODE_11n);
++		/* Preserve the explicit profile for the existing path. */
++		request.dot11mode = hdd_pt_vht80(params) ?
++			MLME_DOT11_MODE_11AC : MLME_DOT11_MODE_11N;
++	}
+ 	status = sme_send_channel_change_req(iface->hdd->mac_handle, &request);
+ 	if (QDF_IS_STATUS_ERROR(status)) {
+ 		wlan_vdev_obj_lock(vdev);

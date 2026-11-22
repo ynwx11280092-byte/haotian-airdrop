@@ -1,0 +1,141 @@
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c b/qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c
+index f2ea398..de385fe 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c
++++ b/qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c
+@@ -2214,9 +2214,20 @@ void dp_tx_put_bank_profile(struct dp_soc_be *be_soc,
+ void dp_tx_update_bank_profile(struct dp_soc_be *be_soc,
+ 			       struct dp_vdev_be *be_vdev)
+ {
++	bool passthru = dp_tx_vdev_is_passthru(&be_vdev->vdev);
++	int old_bank = be_vdev->bank_id;
++	uint8_t old_pmac = passthru ?
++		be_soc->bank_profiles[old_bank].bank_config.pmac_id : 0;
++
+ 	dp_tx_put_bank_profile(be_soc, be_vdev);
+ 	be_vdev->bank_id = dp_tx_get_bank_profile(be_soc, be_vdev);
+ 	be_vdev->vdev.bank_id = be_vdev->bank_id;
++
++	if (passthru && be_vdev->bank_id != DP_BE_INVALID_BANK_ID)
++		pr_info("PT_TX_BANK vdev=%u desc_pmac=%u bank=%d->%d bank_pmac=%u->%u\n",
++			be_vdev->vdev.vdev_id, be_vdev->vdev.lmac_id,
++			old_bank, be_vdev->bank_id, old_pmac,
++			be_soc->bank_profiles[be_vdev->bank_id].bank_config.pmac_id);
+ }
+ 
+ QDF_STATUS dp_tx_desc_pool_init_be(struct dp_soc *soc,
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c b/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+index 83eaa41..9b904fc 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+@@ -12958,6 +12958,12 @@ dp_soc_map_pdev_to_lmac
+ 	return QDF_STATUS_SUCCESS;
+ }
+ 
++#ifdef DRIVER_PASSTHRU_DP
++static bool pt_sync_tx_bank;
++module_param(pt_sync_tx_bank, bool, 0400);
++MODULE_PARM_DESC(pt_sync_tx_bank, "Refresh the PASSTHRU TX bank after LMAC sync");
++#endif
++
+ /**
+  * dp_vdev_update_lmacid() - update mac_id for vdev
+  * @soc_hdl: Datapath soc handle
+@@ -12985,6 +12991,16 @@ dp_vdev_update_lmacid(struct cdp_soc_t *soc_hdl,
+ 
+ 	pr_info("PT_LMAC dp vdev %u lmac %u -> %u\n", vdev_id, vdev->lmac_id, lmac_id);
+ 	vdev->lmac_id = lmac_id;
++#ifdef DRIVER_PASSTHRU_DP
++	if (pt_sync_tx_bank && soc->arch_id == CDP_ARCH_TYPE_BE &&
++	    dp_tx_vdev_is_passthru(vdev)) {
++		cdp_config_param_type config = {0};
++
++		/* BE refreshes the raw TX bank using the current vdev state. */
++		soc->arch_ops.txrx_set_vdev_param(soc, vdev,
++						CDP_ENABLE_CIPHER, config);
++	}
++#endif
+ 	if (wlan_op_mode_monitor == vdev->opmode)
+ 		dp_monitor_update_mac_vdev_map(vdev);
+ 	dp_vdev_unref_delete(soc, vdev, DP_MOD_ID_CDP);
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/dp_pt_rate_observer.h b/qca-wifi-host-cmn/dp/wifi3.0/dp_pt_rate_observer.h
+index 99c77dd..77e904d 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_pt_rate_observer.h
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_pt_rate_observer.h
+@@ -16,6 +16,7 @@ static bool pt_rate_observe;
+ module_param(pt_rate_observe, bool, 0444);
+ struct pt_rate_counts {
+  u64 completed, valid, invalid, tries, amsdu, ldpc;
++ u64 uc_data_completed, uc_data_acked, uc_data_tries;
+  u64 ppdus, agg_ppdus, agg_mpdus, ast_overrides, remote_peer_compl;
+  u64 bw[8], mcs[16], pkt[16], gi[4], status[17], tx_ring[8], ppdu_bin[6];
+  bool have_ppdu;
+@@ -62,7 +63,8 @@ static inline unsigned int dp_pt_ppdu_bucket(u32 cnt)
+ /* Only called with a parsed TQM completion, before descriptor recycling.
+  * Does not change status, peer ownership, queueing or callbacks.
+  */
+-static void dp_pt_rate_end(const struct hal_tx_completion_status *ts)
++static void dp_pt_rate_end(const struct hal_tx_completion_status *ts,
++      bool unicast_data)
+ {
+  unsigned long flags;
+  if (!pt_rate_observe || !ts)
+@@ -70,6 +72,11 @@ static void dp_pt_rate_end(const struct hal_tx_completion_status *ts)
+  spin_lock_irqsave(&pt_rate_lock, flags);
+  pt_rates.completed++;
+  pt_rates.tries += ts->transmit_cnt;
++ if (unicast_data) {
++  pt_rates.uc_data_completed++;
++  pt_rates.uc_data_acked += ts->status == HAL_TX_TQM_RR_FRAME_ACKED;
++  pt_rates.uc_data_tries += ts->transmit_cnt;
++ }
+  pt_rates.status[ts->status < 16 ? ts->status : 16]++;
+  pt_rates.last_peer_id = ts->peer_id;
+ #ifdef DRIVER_PASSTHRU_OWNER
+@@ -124,6 +131,8 @@ static int dp_pt_rate_get(char *buf, const struct kernel_param *kp)
+  RP("schema=1 enabled=%u completed=%llu valid=%llu invalid=%llu tries=%llu amsdu=%llu ldpc=%llu ppdus=%llu agg_ppdus=%llu agg_mpdus=%llu ast_overrides=%llu remote_peer_compl=%llu\n",
+     pt_rate_observe, s.completed, s.valid, s.invalid, s.tries, s.amsdu, s.ldpc,
+     s.ppdus, s.agg_ppdus, s.agg_mpdus, s.ast_overrides, s.remote_peer_compl);
++ RP("uc_data_completed=%llu uc_data_acked=%llu uc_data_tries=%llu\n",
++    s.uc_data_completed, s.uc_data_acked, s.uc_data_tries);
+ #define RPA(name, count) do { RP(#name "="); for (i = 0; i < count; i++) RP("%s%llu", i ? "," : "", s.name[i]); RP("\n"); } while (0)
+  RPA(bw, 8); RPA(mcs, 16); RPA(pkt, 16); RPA(gi, 4); RPA(status, 17); RPA(tx_ring, 8); RPA(ppdu_bin, 6);
+ #undef RPA
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c b/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c
+index 01d2d1f..934c3f3 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c
+@@ -1543,6 +1543,12 @@ struct dp_tx_desc_s *dp_tx_prepare_desc_single(struct dp_vdev *vdev,
+ 			goto failure;
+ 		tx_desc->frm_type = dp_tx_frm_raw;
+ 		tx_desc->flags |= DP_TX_DESC_FLAG_PASSTHRU;
++		if (pt_rate_observe && tx_desc->length >= 10) {
++			const uint8_t *frame = qdf_nbuf_data(nbuf);
++
++			if ((frame[0] & 0x0c) == 0x08 && !(frame[4] & 1))
++				tx_desc->flags |= DP_TX_DESC_FLAG_PT_UC_DATA;
++		}
+ 		return tx_desc;
+ 	}
+ #endif
+@@ -8099,7 +8105,8 @@ void dp_tx_comp_process_tx_status(struct dp_soc *soc,
+ 
+ 	if (dp_tx_desc_is_passthru(tx_desc)) {
+ 		/* No Ethernet statistics, peer lookup or fabricated ACK callback. */
+-		dp_pt_rate_end(ts);
++		dp_pt_rate_end(ts,
++			       !!(tx_desc->flags & DP_TX_DESC_FLAG_PT_UC_DATA));
+ 		DP_STATS_INCC(soc, tx.dropped_fw_removed, 1,
+ 			      (ts->status == HAL_TX_TQM_RR_REM_CMD_REM));
+ 		return;
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.h b/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.h
+index ca9468e..c958c03 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.h
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.h
+@@ -99,6 +99,7 @@ void dp_tx_update_eapol_comp_status_stats(struct dp_soc *soc,
+ #define DP_TX_DESC_FLAG_SPECIAL         0x80000
+ #define DP_TX_DESC_FLAG_BCAST           0x100000
+ #define DP_TX_DESC_FLAG_OPT_DP_CTRL           0x200000
++#define DP_TX_DESC_FLAG_PT_UC_DATA	0x400000
+ 
+ /* Persistent classification: vdev_id may be invalidated before completion. */
+ #ifdef DRIVER_PASSTHRU_DP

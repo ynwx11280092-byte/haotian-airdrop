@@ -1,0 +1,44 @@
+=== FILE: qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c
+
+<<<<<<<
+=======
+#include "cfg_ucfg_api.h"
+#include "wlan_crypto_global_api.h"
+#ifdef DRIVER_PASSTHRU_OWNER
+#include <linux/moduleparam.h>
+static bool pt_coex_5g_override;
+module_param(pt_coex_5g_override, bool, 0400);
+MODULE_PARM_DESC(pt_coex_5g_override, "Experimental single STA non-DFS 5GHz plus fixed149 PAS admission override");
+#endif
+>>>>>>>
+
+---
+<<<<<<<
+			 mode, session_count);
+=======
+		mode, pm_ctx->no_of_active_sessions[mode]);
+
+	if (mode == QDF_PASSTHRU_MODE) {
+		if (QDF_IS_STATUS_ERROR(policy_mgr_incr_connection_count(psoc, session_id, mode))) {
+			pm_ctx->no_of_active_sessions[mode]--;
+			qdf_mutex_release(&pm_ctx->qdf_conc_list_lock);
+			if (pm_ctx->dp_cbacks.hdd_v2_flow_pool_unmap)
+				pm_ctx->dp_cbacks.hdd_v2_flow_pool_unmap(session_id);
+			return;
+		}
+	} else {
+		policy_mgr_incr_connection_count(psoc, session_id, mode);
+	}
+>>>>>>>
+
+---
+<<<<<<<
+=======
+	switch (mode) {
+	case QDF_PASSTHRU_MODE:
+	case QDF_STA_MODE:
+	case QDF_P2P_CLIENT_MODE:
+	case QDF_P2P_GO_MODE:
+>>>>>>>
+
+---

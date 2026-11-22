@@ -1,0 +1,14 @@
+#!/sbin/sh
+TMPDIR=/dev/tmp
+rm -rf "$TMPDIR"
+mkdir -p "$TMPDIR"
+chcon u:object_r:system_file:s0 "$TMPDIR" 2>/dev/null || true
+
+if [ -f /data/adb/magisk/util_functions.sh ]; then
+  . /data/adb/magisk/util_functions.sh
+  install_module
+  exit 0
+fi
+
+echo "! Please install this module in KernelSU, APatch, or Magisk Manager."
+exit 1

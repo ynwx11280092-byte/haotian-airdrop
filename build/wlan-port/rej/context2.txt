@@ -1,0 +1,652 @@
+########## dp_be_tx.c dp_tx_hw_enqueue_be (lines 1880-2100):
+  1880	{
+  1881	}
+  1882	#endif /* IPA_OFFLOAD */
+  1883	
+  1884	QDF_STATUS dp_tx_init_bank_profiles(struct dp_soc_be *be_soc)
+  1885	{
+  1886		int i, num_tcl_banks;
+  1887	
+  1888		num_tcl_banks = hal_tx_get_num_tcl_banks(be_soc->soc.hal_soc);
+  1889	
+  1890		dp_assert_always_internal(num_tcl_banks);
+  1891		be_soc->num_bank_profiles = num_tcl_banks;
+  1892	
+  1893		be_soc->bank_profiles = qdf_mem_malloc(num_tcl_banks *
+  1894						       sizeof(*be_soc->bank_profiles));
+  1895		if (!be_soc->bank_profiles) {
+  1896			dp_err("unable to allocate memory for DP TX Profiles!");
+  1897			return QDF_STATUS_E_NOMEM;
+  1898		}
+  1899	
+  1900		DP_TX_BANK_LOCK_CREATE(&be_soc->tx_bank_lock);
+  1901	
+  1902		for (i = 0; i < num_tcl_banks; i++) {
+  1903			be_soc->bank_profiles[i].is_configured = false;
+  1904			qdf_atomic_init(&be_soc->bank_profiles[i].ref_count);
+  1905		}
+  1906		dp_info("initialized %u bank profiles", be_soc->num_bank_profiles);
+  1907	
+  1908		dp_tx_init_ipa_bank_profile(be_soc);
+  1909	
+  1910		return QDF_STATUS_SUCCESS;
+  1911	}
+  1912	
+  1913	void dp_tx_deinit_bank_profiles(struct dp_soc_be *be_soc)
+  1914	{
+  1915		qdf_mem_free(be_soc->bank_profiles);
+  1916		DP_TX_BANK_LOCK_DESTROY(&be_soc->tx_bank_lock);
+  1917	}
+  1918	
+  1919	static
+  1920	void dp_tx_get_vdev_bank_config(struct dp_vdev_be *be_vdev,
+  1921					union hal_tx_bank_config *bank_config)
+  1922	{
+  1923		struct dp_vdev *vdev = &be_vdev->vdev;
+  1924	
+  1925		bank_config->epd = 0;
+  1926	
+  1927		bank_config->encap_type = vdev->tx_encap_type;
+  1928	
+  1929		/* Only valid for raw frames. Needs work for RAW mode */
+  1930		if (vdev->tx_encap_type == htt_cmn_pkt_type_raw) {
+  1931			bank_config->encrypt_type = sec_type_map[vdev->sec_type];
+  1932		} else {
+  1933			bank_config->encrypt_type = 0;
+  1934		}
+  1935	
+  1936		bank_config->src_buffer_swap = 0;
+  1937		bank_config->link_meta_swap = 0;
+  1938	
+  1939		if ((vdev->search_type == HAL_TX_ADDR_INDEX_SEARCH) &&
+  1940		    (vdev->opmode == wlan_op_mode_sta
+  1941	#ifdef DRIVER_PASSTHRU_DP
+  1942		     || vdev->opmode == wlan_op_mode_passthru
+  1943	#endif
+  1944		    )) {
+  1945			bank_config->index_lookup_enable = 1;
+  1946			bank_config->mcast_pkt_ctrl = HAL_TX_MCAST_CTRL_MEC_NOTIFY;
+  1947			bank_config->addrx_en = 0;
+  1948			bank_config->addry_en = 0;
+  1949		} else {
+  1950			bank_config->index_lookup_enable = 0;
+  1951			bank_config->mcast_pkt_ctrl = HAL_TX_MCAST_CTRL_FW_EXCEPTION;
+  1952			bank_config->addrx_en =
+  1953				(vdev->hal_desc_addr_search_flags &
+  1954				 HAL_TX_DESC_ADDRX_EN) ? 1 : 0;
+  1955			bank_config->addry_en =
+  1956				(vdev->hal_desc_addr_search_flags &
+  1957				 HAL_TX_DESC_ADDRY_EN) ? 1 : 0;
+  1958		}
+  1959	
+  1960		bank_config->mesh_enable = vdev->mesh_vdev ? 1 : 0;
+  1961	
+  1962		bank_config->dscp_tid_map_id = vdev->dscp_tid_map_id;
+  1963	
+  1964		/* Disabling vdev id check for now. Needs revist. */
+  1965		bank_config->vdev_id_check_en = be_vdev->vdev_id_check_en;
+  1966	
+  1967		bank_config->pmac_id = vdev->lmac_id;
+  1968	}
+  1969	
+  1970	int dp_tx_get_bank_profile(struct dp_soc_be *be_soc,
+  1971				   struct dp_vdev_be *be_vdev)
+  1972	{
+  1973		char *temp_str = "";
+  1974		bool found_match = false;
+  1975		int bank_id = DP_BE_INVALID_BANK_ID;
+  1976		int i;
+  1977		int unconfigured_slot = DP_BE_INVALID_BANK_ID;
+  1978		int zero_ref_count_slot = DP_BE_INVALID_BANK_ID;
+  1979		union hal_tx_bank_config vdev_config = {0};
+  1980	
+  1981		/* convert vdev params into hal_tx_bank_config */
+  1982		dp_tx_get_vdev_bank_config(be_vdev, &vdev_config);
+  1983	
+  1984		DP_TX_BANK_LOCK_ACQUIRE(&be_soc->tx_bank_lock);
+  1985		/* go over all banks and find a matching/unconfigured/unused bank */
+  1986		for (i = 0; i < be_soc->num_bank_profiles; i++) {
+  1987			if (be_soc->bank_profiles[i].is_configured &&
+  1988			    (be_soc->bank_profiles[i].bank_config.val ^
+  1989							vdev_config.val) == 0) {
+  1990				found_match = true;
+  1991				break;
+  1992			}
+  1993	
+  1994			if (unconfigured_slot == DP_BE_INVALID_BANK_ID &&
+  1995			    !be_soc->bank_profiles[i].is_configured)
+  1996				unconfigured_slot = i;
+  1997			else if (zero_ref_count_slot  == DP_BE_INVALID_BANK_ID &&
+  1998			    !qdf_atomic_read(&be_soc->bank_profiles[i].ref_count))
+  1999				zero_ref_count_slot = i;
+  2000		}
+  2001	
+  2002		if (found_match) {
+  2003			temp_str = "matching";
+  2004			bank_id = i;
+  2005			goto inc_ref_and_return;
+  2006		}
+  2007		if (unconfigured_slot != DP_BE_INVALID_BANK_ID) {
+  2008			temp_str = "unconfigured";
+  2009			bank_id = unconfigured_slot;
+  2010			goto configure_and_return;
+  2011		}
+  2012		if (zero_ref_count_slot != DP_BE_INVALID_BANK_ID) {
+  2013			temp_str = "zero_ref_count";
+  2014			bank_id = zero_ref_count_slot;
+  2015		}
+  2016		if (bank_id == DP_BE_INVALID_BANK_ID) {
+  2017			dp_alert("unable to find TX bank!");
+  2018			QDF_BUG(0);
+  2019			return bank_id;
+  2020		}
+  2021	
+  2022	configure_and_return:
+  2023		be_soc->bank_profiles[bank_id].is_configured = true;
+  2024		be_soc->bank_profiles[bank_id].bank_config.val = vdev_config.val;
+  2025		hal_tx_populate_bank_register(be_soc->soc.hal_soc,
+  2026					      &be_soc->bank_profiles[bank_id].bank_config,
+  2027					      bank_id);
+  2028	inc_ref_and_return:
+  2029		qdf_atomic_inc(&be_soc->bank_profiles[bank_id].ref_count);
+  2030		DP_TX_BANK_LOCK_RELEASE(&be_soc->tx_bank_lock);
+  2031	
+  2032		dp_info("found %s slot at index %d, input:0x%x match:0x%x ref_count %u",
+  2033			temp_str, bank_id, vdev_config.val,
+  2034			be_soc->bank_profiles[bank_id].bank_config.val,
+  2035			qdf_atomic_read(&be_soc->bank_profiles[bank_id].ref_count));
+  2036	
+  2037		dp_info("epd:%x encap:%x encryp:%x src_buf_swap:%x link_meta_swap:%x addrx_en:%x addry_en:%x mesh_en:%x vdev_id_check:%x pmac_id:%x mcast_pkt_ctrl:%x",
+  2038			be_soc->bank_profiles[bank_id].bank_config.epd,
+  2039			be_soc->bank_profiles[bank_id].bank_config.encap_type,
+  2040			be_soc->bank_profiles[bank_id].bank_config.encrypt_type,
+  2041			be_soc->bank_profiles[bank_id].bank_config.src_buffer_swap,
+  2042			be_soc->bank_profiles[bank_id].bank_config.link_meta_swap,
+  2043			be_soc->bank_profiles[bank_id].bank_config.addrx_en,
+  2044			be_soc->bank_profiles[bank_id].bank_config.addry_en,
+  2045			be_soc->bank_profiles[bank_id].bank_config.mesh_enable,
+  2046			be_soc->bank_profiles[bank_id].bank_config.vdev_id_check_en,
+  2047			be_soc->bank_profiles[bank_id].bank_config.pmac_id,
+  2048			be_soc->bank_profiles[bank_id].bank_config.mcast_pkt_ctrl);
+  2049	
+  2050		return bank_id;
+  2051	}
+  2052	
+  2053	void dp_tx_put_bank_profile(struct dp_soc_be *be_soc,
+  2054				    struct dp_vdev_be *be_vdev)
+  2055	{
+  2056		DP_TX_BANK_LOCK_ACQUIRE(&be_soc->tx_bank_lock);
+  2057		qdf_atomic_dec(&be_soc->bank_profiles[be_vdev->bank_id].ref_count);
+  2058		DP_TX_BANK_LOCK_RELEASE(&be_soc->tx_bank_lock);
+  2059	}
+  2060	
+  2061	void dp_tx_update_bank_profile(struct dp_soc_be *be_soc,
+  2062				       struct dp_vdev_be *be_vdev)
+  2063	{
+  2064		dp_tx_put_bank_profile(be_soc, be_vdev);
+  2065		be_vdev->bank_id = dp_tx_get_bank_profile(be_soc, be_vdev);
+  2066		be_vdev->vdev.bank_id = be_vdev->bank_id;
+  2067	}
+  2068	
+  2069	QDF_STATUS dp_tx_desc_pool_init_be(struct dp_soc *soc,
+  2070					   uint32_t num_elem,
+  2071					   uint8_t pool_id,
+  2072					   bool spcl_tx_desc)
+  2073	{
+  2074		struct dp_tx_desc_pool_s *tx_desc_pool;
+  2075		struct dp_hw_cookie_conversion_t *cc_ctx;
+  2076		struct dp_spt_page_desc *page_desc;
+  2077		struct dp_tx_desc_s *tx_desc;
+  2078		uint32_t ppt_idx = 0;
+  2079		uint32_t avail_entry_index = 0;
+  2080	
+  2081		if (!num_elem) {
+  2082			dp_err("desc_num 0 !!");
+  2083			return QDF_STATUS_E_FAILURE;
+  2084		}
+  2085	
+  2086		if (spcl_tx_desc) {
+  2087			tx_desc_pool = dp_get_spcl_tx_desc_pool(soc, pool_id);
+  2088			cc_ctx  = dp_get_spcl_tx_cookie_t(soc, pool_id);
+  2089		} else {
+  2090			tx_desc_pool = dp_get_tx_desc_pool(soc, pool_id);;
+  2091			cc_ctx  = dp_get_tx_cookie_t(soc, pool_id);
+  2092		}
+  2093		tx_desc = tx_desc_pool->freelist;
+  2094		page_desc = &cc_ctx->page_desc_base[0];
+  2095		while (tx_desc) {
+  2096			if (avail_entry_index == 0) {
+  2097				if (ppt_idx >= cc_ctx->total_page_num) {
+  2098					dp_alert("insufficient secondary page tables");
+  2099					qdf_assert_always(0);
+  2100				}
+
+########## dp_tx.c dp_tx_prepare_desc_single (1490-1540):
+  1490	
+  1491		/* Initialize the SW tx descriptor */
+  1492		tx_desc->nbuf = nbuf;
+  1493		tx_desc->frm_type = msdu_info->frm_type;
+  1494		tx_desc->tx_encap_type = vdev->tx_encap_type;
+  1495		tx_desc->vdev_id = vdev->vdev_id;
+  1496		tx_desc->pdev = pdev;
+  1497		tx_desc->pkt_offset = 0;
+  1498	
+  1499		dp_tx_trace_pkt(soc, nbuf, tx_desc->id, vdev->vdev_id,
+  1500				vdev->qdf_opmode);
+  1501	
+  1502		/* Handle scattered frames - TSO/SG/ME */
+  1503		/* Allocate and prepare an extension descriptor for scattered frames */
+  1504		msdu_ext_desc = dp_tx_prepare_ext_desc(vdev, msdu_info, desc_pool_id);
+  1505		if (!msdu_ext_desc) {
+  1506			dp_tx_info("Tx Extension Descriptor Alloc Fail");
+  1507			goto failure;
+  1508		}
+  1509	
+  1510	#if !TQM_BYPASS_WAR
+  1511		if (qdf_unlikely(msdu_info->exception_fw) ||
+  1512		    dp_tx_is_nbuf_marked_exception(soc, nbuf))
+  1513	#endif
+  1514		{
+  1515			/* Temporary WAR due to TQM VP issues */
+  1516			tx_desc->flags |= DP_TX_DESC_FLAG_TO_FW;
+  1517			qdf_atomic_inc(&soc->num_tx_exception);
+  1518		}
+  1519	
+  1520	
+  1521		tx_desc->msdu_ext_desc = msdu_ext_desc;
+  1522		tx_desc->flags |= DP_TX_DESC_FLAG_FRAG;
+  1523	
+  1524		msdu_ext_desc->tso_desc = msdu_info->u.tso_info.curr_seg;
+  1525		msdu_ext_desc->tso_num_desc = msdu_info->u.tso_info.tso_num_seg_list;
+  1526	
+  1527		tx_desc->dma_addr = msdu_ext_desc->paddr;
+  1528	
+  1529		if (msdu_ext_desc->flags & DP_TX_EXT_DESC_FLAG_METADATA_VALID)
+  1530			tx_desc->length = HAL_TX_EXT_DESC_WITH_META_DATA;
+  1531		else
+  1532			tx_desc->length = HAL_TX_EXTENSION_DESC_LEN_BYTES;
+  1533	
+  1534		return tx_desc;
+  1535	failure:
+  1536		dp_tx_desc_release(soc, tx_desc, desc_pool_id);
+  1537		return NULL;
+  1538	}
+  1539	
+  1540	/**
+
+########## dp_tx.c dp_tx_send_msdu_single (3650,3720):
+  3650	qdf_nbuf_t dp_tx_send_msdu_multiple(struct dp_vdev *vdev, qdf_nbuf_t nbuf,
+  3651					    struct dp_tx_msdu_info_s *msdu_info)
+  3652	{
+  3653		uint32_t i;
+  3654		struct dp_pdev *pdev = vdev->pdev;
+  3655		struct dp_soc *soc = pdev->soc;
+  3656		struct dp_tx_desc_s *tx_desc;
+  3657		bool is_cce_classified = false;
+  3658		QDF_STATUS status;
+  3659		uint16_t htt_tcl_metadata = 0;
+  3660		struct dp_tx_queue *tx_q = &msdu_info->tx_queue;
+  3661		struct cdp_tid_tx_stats *tid_stats = NULL;
+  3662		uint8_t prep_desc_fail = 0, hw_enq_fail = 0;
+  3663	
+  3664		if (msdu_info->frm_type == dp_tx_frm_me)
+  3665			nbuf = msdu_info->u.sg_info.curr_seg->nbuf;
+  3666	
+  3667		i = 0;
+  3668		/* Print statement to track i and num_seg */
+  3669		/*
+  3670		 * For each segment (maps to 1 MSDU) , prepare software and hardware
+  3671		 * descriptors using information in msdu_info
+  3672		 */
+  3673		while (i < msdu_info->num_seg) {
+  3674			/*
+  3675			 * Setup Tx descriptor for an MSDU, and MSDU extension
+  3676			 * descriptor
+  3677			 */
+  3678			tx_desc = dp_tx_prepare_desc(vdev, nbuf, msdu_info,
+  3679					tx_q->desc_pool_id);
+  3680	
+  3681			if (!tx_desc) {
+  3682				if (msdu_info->frm_type == dp_tx_frm_me) {
+  3683					prep_desc_fail++;
+  3684					dp_tx_me_free_buf(pdev,
+  3685						(void *)(msdu_info->u.sg_info
+  3686							.curr_seg->frags[0].vaddr));
+  3687					if (prep_desc_fail == msdu_info->num_seg) {
+  3688						/*
+  3689						 * Unmap is needed only if descriptor
+  3690						 * preparation failed for all segments.
+  3691						 */
+  3692						qdf_nbuf_unmap(soc->osdev,
+  3693							       msdu_info->u.sg_info.
+  3694							       curr_seg->nbuf,
+  3695							       QDF_DMA_TO_DEVICE);
+  3696					}
+  3697					/*
+  3698					 * Free the nbuf for the current segment
+  3699					 * and make it point to the next in the list.
+  3700					 * For me, there are as many segments as there
+  3701					 * are no of clients.
+  3702					 */
+  3703					qdf_nbuf_free(msdu_info->u.sg_info
+  3704						      .curr_seg->nbuf);
+  3705					if (msdu_info->u.sg_info.curr_seg->next) {
+  3706						msdu_info->u.sg_info.curr_seg =
+  3707							msdu_info->u.sg_info
+  3708							.curr_seg->next;
+  3709						nbuf = msdu_info->u.sg_info
+  3710						       .curr_seg->nbuf;
+  3711					}
+  3712					i++;
+  3713					continue;
+  3714				}
+  3715	
+  3716				if (msdu_info->frm_type == dp_tx_frm_tso) {
+  3717					dp_tx_tso_seg_history_add(
+  3718							soc,
+  3719							msdu_info->u.tso_info.curr_seg,
+  3720							nbuf, 0, DP_TX_DESC_UNMAP);
+
+########## get_set_utils policy_mgr_incr_active_session (5700-5770):
+  5700		if (!pm_ctx) {
+  5701			policy_mgr_err("Invalid Context");
+  5702			return status;
+  5703		}
+  5704	
+  5705		qdf_mutex_acquire(&pm_ctx->qdf_conc_list_lock);
+  5706		while (PM_CONC_CONNECTION_LIST_VALID_INDEX(conn_index)) {
+  5707			if (vdev_id == pm_conc_connection_list[conn_index].vdev_id) {
+  5708				/* debug msg */
+  5709				found = true;
+  5710				break;
+  5711			}
+  5712			conn_index++;
+  5713		}
+  5714		if (!found) {
+  5715			policy_mgr_err("can't find vdev_id %d in pm_conc_connection_list",
+  5716				vdev_id);
+  5717			qdf_mutex_release(&pm_ctx->qdf_conc_list_lock);
+  5718			return status;
+  5719		}
+  5720		next_conn_index = conn_index + 1;
+  5721		while (PM_CONC_CONNECTION_LIST_VALID_INDEX(next_conn_index)) {
+  5722			pm_conc_connection_list[conn_index].vdev_id =
+  5723				pm_conc_connection_list[next_conn_index].vdev_id;
+  5724			pm_conc_connection_list[conn_index].mode =
+  5725				pm_conc_connection_list[next_conn_index].mode;
+  5726			pm_conc_connection_list[conn_index].mac =
+  5727				pm_conc_connection_list[next_conn_index].mac;
+  5728			pm_conc_connection_list[conn_index].freq =
+  5729				pm_conc_connection_list[next_conn_index].freq;
+  5730			pm_conc_connection_list[conn_index].bw =
+  5731				pm_conc_connection_list[next_conn_index].bw;
+  5732			pm_conc_connection_list[conn_index].chain_mask =
+  5733				pm_conc_connection_list[next_conn_index].chain_mask;
+  5734			pm_conc_connection_list[conn_index].original_nss =
+  5735				pm_conc_connection_list[next_conn_index].original_nss;
+  5736			pm_conc_connection_list[conn_index].in_use =
+  5737				pm_conc_connection_list[next_conn_index].in_use;
+  5738			pm_conc_connection_list[conn_index].ch_flagext =
+  5739				pm_conc_connection_list[next_conn_index].ch_flagext;
+  5740			conn_index++;
+  5741			next_conn_index++;
+  5742		}
+  5743	
+  5744		/* clean up the entry */
+  5745		qdf_mem_zero(&pm_conc_connection_list[next_conn_index - 1],
+  5746			sizeof(*pm_conc_connection_list));
+  5747	
+  5748		conn_index = 0;
+  5749		while (PM_CONC_CONNECTION_LIST_VALID_INDEX(conn_index)) {
+  5750			if (vdev_id == pm_conc_connection_list[conn_index].vdev_id) {
+  5751				panic = true;
+  5752				break;
+  5753			}
+  5754			conn_index++;
+  5755		}
+  5756	
+  5757		qdf_mutex_release(&pm_ctx->qdf_conc_list_lock);
+  5758		if (panic) {
+  5759			policy_mgr_err("dup entry occur");
+  5760		case QDF_PASSTHRU_MODE:
+  5761			policy_mgr_debug_alert();
+  5762		}
+  5763		if (pm_ctx->conc_cbacks.connection_info_update)
+  5764			pm_ctx->conc_cbacks.connection_info_update();
+  5765	
+  5766		return QDF_STATUS_SUCCESS;
+  5767	}
+  5768	
+  5769	uint32_t policy_mgr_get_mode_specific_conn_info(
+  5770			struct wlan_objmgr_psoc *psoc,
+
+########## hdd_driver_ops __hdd_soc_remove (1120-1200):
+  1120	}
+  1121	
+  1122	static int __hdd_soc_remove(struct device *dev)
+  1123	{
+  1124		struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
+  1125	
+  1126		int ret;
+  1127	
+  1128	#ifdef DRIVER_PASSTHRU_RUNTIME
+  1129		ret = hdd_pt_driver_teardown_status();
+  1130		if (ret)
+  1131			return ret;
+  1132		ret = hdd_pt_runtime_teardown_check(hdd_ctx);
+  1133		if (ret)
+  1134			return ret;
+  1135	#endif
+  1136		QDF_BUG(hdd_ctx);
+  1137		if (!hdd_ctx)
+  1138			return -ENODEV;
+  1139	
+  1140		pr_info("%s: Removing driver v%s\n", WLAN_MODULE_NAME,
+  1141			QWLAN_VERSIONSTR);
+  1142	
+  1143		qdf_rtpm_sync_resume();
+  1144		cds_set_driver_loaded(false);
+  1145		cds_set_unload_in_progress(true);
+  1146		if (!hdd_wait_for_debugfs_threads_completion())
+  1147			hdd_warn("Debugfs threads are still active attempting driver unload anyway");
+  1148	
+  1149		if (hdd_get_conparam() == QDF_GLOBAL_EPPING_MODE) {
+  1150			hdd_wlan_stop_modules(hdd_ctx, false);
+  1151			qdf_nbuf_deinit_replenish_timer();
+  1152		} else {
+  1153			hdd_thermal_mitigation_unregister(hdd_ctx, dev);
+  1154			hdd_wlan_exit(hdd_ctx);
+  1155		}
+  1156	
+  1157		hdd_context_destroy(hdd_ctx);
+  1158	
+  1159		cds_set_driver_in_bad_state(false);
+  1160		cds_set_unload_in_progress(false);
+  1161	
+  1162		ucfg_dp_prealloc_deinit();
+  1163	
+  1164		pr_info("%s: Driver De-initialized\n", WLAN_MODULE_NAME);
+  1165		return 0;
+  1166	}
+  1167	
+  1168	/**
+  1169	 * hdd_soc_remove() - perform SoC remove
+  1170	 * @dev: the kernel device being removed
+  1171	 *
+  1172	 * A SoC remove indicates the attached SoC hardware is about to go away and
+  1173	 * needs to be cleaned up.
+  1174	 *
+  1175	 * Return: void
+  1176	 */
+  1177	static int hdd_soc_remove(struct device *dev)
+  1178	{
+  1179		return __hdd_soc_remove(dev);
+  1180	}
+  1181	
+  1182	/**
+  1183	 * hdd_send_hang_data() - Send hang data to userspace
+  1184	 * @data: Hang data
+  1185	 * @data_len: Length of @data
+  1186	 *
+  1187	 * Return: None
+  1188	 */
+  1189	static void hdd_send_hang_data(uint8_t *data, size_t data_len)
+  1190	{
+  1191		enum qdf_hang_reason reason = QDF_REASON_UNSPECIFIED;
+  1192		struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
+  1193	
+  1194		if (!hdd_ctx)
+  1195			return;
+  1196	
+  1197		cds_get_recovery_reason(&reason);
+  1198		cds_reset_recovery_reason();
+  1199		wlan_hdd_send_hang_reason_event(hdd_ctx, reason, data, data_len);
+  1200	}
+
+########## hdd_main hdd_vdev_destroy (7860-7960):
+  7860				MAX_VDEV_RTT_PARAMS);
+  7861		if (QDF_IS_STATUS_ERROR(status))
+  7862			return status;
+  7863	
+  7864		status = sme_send_multi_pdev_vdev_set_params(MLME_VDEV_SETPARAM,
+  7865							     vdev_id, vdevsetparam,
+  7866							     index);
+  7867		if (QDF_IS_STATUS_ERROR(status))
+  7868			hdd_err("failed to set RTT_RESPONDER,INITIATOR params:%d",
+  7869				status);
+  7870	
+  7871		return status;
+  7872	}
+  7873	
+  7874	static void hdd_store_vdev_info(struct wlan_hdd_link_info *link_info,
+  7875					struct wlan_objmgr_vdev *vdev)
+  7876	{
+  7877		struct vdev_osif_priv *osif_priv;
+  7878	
+  7879		osif_priv = wlan_vdev_get_ospriv(vdev);
+  7880		if (osif_priv) {
+  7881			osif_priv->wdev = link_info->adapter->dev->ieee80211_ptr;
+  7882			osif_priv->legacy_osif_priv = link_info;
+  7883		}
+  7884	
+  7885		qdf_spin_lock_bh(&link_info->vdev_lock);
+  7886		link_info->vdev_id = wlan_vdev_get_id(vdev);
+  7887		link_info->vdev = vdev;
+  7888		qdf_spin_unlock_bh(&link_info->vdev_lock);
+  7889	}
+  7890	
+  7891	static void
+  7892	hdd_init_station_context(struct wlan_hdd_link_info *link_info)
+  7893	{
+  7894		struct hdd_station_ctx *sta_ctx;
+  7895		struct hdd_context *hdd_ctx = WLAN_HDD_GET_CTX(link_info->adapter);
+  7896	
+  7897		/* Set the default operation channel freq and auth type to open */
+  7898		sta_ctx = WLAN_HDD_GET_STATION_CTX_PTR(link_info);
+  7899		sta_ctx->conn_info.chan_freq = hdd_ctx->config->operating_chan_freq;
+  7900		sta_ctx->conn_info.auth_type = eCSR_AUTH_TYPE_OPEN_SYSTEM;
+  7901		hdd_roam_profile_init(link_info);
+  7902	}
+  7903	
+  7904	static void hdd_vdev_set_ht_vht_ies(mac_handle_t mac_handle,
+  7905					    struct wlan_objmgr_vdev *vdev)
+  7906	{
+  7907		QDF_STATUS status;
+  7908		struct wlan_objmgr_psoc *psoc;
+  7909		bool bval = false;
+  7910	
+  7911		psoc = wlan_vdev_get_psoc(vdev);
+  7912		status = ucfg_mlme_get_vht_enable2x2(psoc, &bval);
+  7913		if (QDF_IS_STATUS_ERROR(status))
+  7914			hdd_err("unable to get vht_enable2x2");
+  7915	
+  7916		sme_set_pdev_ht_vht_ies(mac_handle, bval);
+  7917		sme_set_vdev_ies_per_band(mac_handle, wlan_vdev_get_id(vdev),
+  7918					  wlan_vdev_mlme_get_opmode(vdev));
+  7919	}
+  7920	
+  7921	static void
+  7922	hdd_vdev_configure_rtt_mac_randomization(struct wlan_objmgr_psoc *psoc,
+  7923						 struct wlan_objmgr_vdev *vdev)
+  7924	{
+  7925		int errno;
+  7926		QDF_STATUS status;
+  7927		bool bval = false;
+  7928	
+  7929		status = ucfg_mlme_get_rtt_mac_randomization(psoc, &bval);
+  7930		if (QDF_IS_STATUS_ERROR(status))
+  7931			hdd_err("unable to get RTT MAC randomization value");
+  7932	
+  7933		hdd_debug("setting RTT mac randomization param: %d", bval);
+  7934		errno = sme_cli_set_command(
+  7935				wlan_vdev_get_id(vdev),
+  7936				wmi_vdev_param_enable_disable_rtt_initiator_random_mac,
+  7937				bval, VDEV_CMD);
+  7938	
+  7939		if (errno)
+  7940			hdd_err("RTT mac randomization param set failed %d", errno);
+  7941	}
+  7942	
+  7943	static void
+  7944	hdd_vdev_configure_max_tdls_params(struct wlan_objmgr_psoc *psoc,
+  7945					   struct wlan_objmgr_vdev *vdev)
+  7946	{
+  7947		uint16_t max_peer_count;
+  7948		bool target_bigtk_support = false;
+  7949	
+  7950		/*
+  7951		 * Max peer can be tdls peers + self peer + bss peer +
+  7952		 * temp bss peer for roaming create/delete peer at same time
+  7953		 */
+  7954		max_peer_count = cfg_tdls_get_max_peer_count(psoc);
+  7955		max_peer_count += 3;
+  7956		wlan_vdev_set_max_peer_count(vdev, max_peer_count);
+  7957	
+  7958		ucfg_mlme_get_bigtk_support(psoc, &target_bigtk_support);
+  7959		if (target_bigtk_support)
+  7960			mlme_set_bigtk_support(vdev, true);
+
+########## greps:
+qcacld-3.0/core/mac/src/pe/lim/lim_api.c:4968:	} else if (wlan_vdev_mlme_get_opmode(vdev) != QDF_PASSTHRU_MODE) {
+qcacld-3.0/core/mac/src/pe/lim/lim_api.c:5032:	    wlan_vdev_mlme_get_opmode(current_vdev) != QDF_PASSTHRU_MODE)
+qcacld-3.0/core/mac/src/pe/lim/lim_process_sme_req_messages.c:10067:	if (session_entry->opmode == QDF_PASSTHRU_MODE) {
+qcacld-3.0/core/wma/src/wma_dev_if.c:471:		wlan_vdev_mlme_get_opmode(vdev) == QDF_PASSTHRU_MODE;
+qcacld-3.0/core/wma/src/wma_utils.c:4825:	if (wlan_vdev_mlme_get_opmode(vdev_mlme->vdev) == QDF_PASSTHRU_MODE)
+--- hdd_vdev_delete_return:
+qcacld-3.0/core/hdd/src/wlan_hdd_main.c.rej:21:+		return hdd_vdev_delete_return(record, -EINVAL);
+qcacld-3.0/core/hdd/src/wlan_hdd_main.c.rej:29:+		return hdd_vdev_delete_return(record, -EINVAL);
+qcacld-3.0/core/hdd/src/wlan_hdd_main.c.rej:39:+		return hdd_vdev_delete_return(record, -EINVAL);
+qcacld-3.0/core/hdd/src/wlan_hdd_main.c:7665:hdd_vdev_delete_return(struct hdd_pt_vdev_record *record, int result)
+qcacld-3.0/core/hdd/src/wlan_hdd_main.c:7734:	return hdd_vdev_delete_return(record, ret);
+--- HDD_PT_VDEV_DELETE_CALLED:
+qcacld-3.0/core/hdd/src/wlan_hdd_main.c.rej:9:+		if (record->steps & HDD_PT_VDEV_DELETE_CALLED)
+qcacld-3.0/core/hdd/src/wlan_hdd_main.c.rej:11:+		record->steps |= HDD_PT_VDEV_DELETE_CALLED;
+qcacld-3.0/core/hdd/src/wlan_hdd_passthru_owner.c:974:	u32 required = HDD_PT_VDEV_DELETE_CALLED |
+--- hdd_vdev_destroy signatures:
+qcacld-3.0/core/hdd/inc/wlan_hdd_main.h:3206: * hdd_vdev_destroy() - Destroy the vdev in the firmware
+qcacld-3.0/core/hdd/inc/wlan_hdd_main.h:3214:int hdd_vdev_destroy(struct wlan_hdd_link_info *link_info);
+qcacld-3.0/core/hdd/src/wlan_hdd_main.c.rej:3:@@ -7892,24 +7957,36 @@ int hdd_vdev_destroy(struct wlan_hdd_link_info *link_info)
+qcacld-3.0/core/hdd/src/wlan_hdd_passthru_owner.c:359:			hdd_vdev_destroy(owner->link);
+qcacld-3.0/core/hdd/src/wlan_hdd_main.c:7677:__hdd_vdev_destroy(struct wlan_hdd_link_info *link_info,
+--- hdd_wlan_stop_modules / hdd_wlan_exit signatures:
+qcacld-3.0/core/hdd/inc/wlan_hdd_main.h:3467: * hdd_wlan_exit() - HDD WLAN exit function
+qcacld-3.0/core/hdd/inc/wlan_hdd_main.h:3472:int hdd_wlan_exit(struct hdd_context *hdd_ctx);
+qcacld-3.0/core/hdd/inc/wlan_hdd_main.h:4446:int hdd_wlan_stop_modules(struct hdd_context *hdd_ctx, bool ftm_mode);
+--- policy_mgr_incr_connection_count:
+qcacld-3.0/components/cmn_services/policy_mgr/inc/wlan_policy_mgr_api.h:1837: * policy_mgr_incr_connection_count() - adds the new connection to
+qcacld-3.0/components/cmn_services/policy_mgr/inc/wlan_policy_mgr_api.h:1848:QDF_STATUS policy_mgr_incr_connection_count(struct wlan_objmgr_psoc *psoc,
+qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c.rej:7:-	policy_mgr_incr_connection_count(psoc, session_id, mode);
+qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c.rej:10:+		if (QDF_IS_STATUS_ERROR(policy_mgr_incr_connection_count(psoc, session_id, mode))) {
+--- dp_tx_desc_update_fast:
+qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c.rej:17:-	dp_tx_desc_update_fast_flag(soc, tx_desc,
+qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c.rej:20:+		dp_tx_desc_update_fast_flag(soc, tx_desc,
+qca-wifi-host-cmn/dp/wifi3.0/dp_tx_desc.h:1262:static inline void dp_tx_desc_update_fast_comp_flag(struct dp_soc *soc,
+qca-wifi-host-cmn/dp/wifi3.0/dp_tx_desc.h:1272:static inline void dp_tx_desc_update_fast_comp_flag(struct dp_soc *soc,
+qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c:1576:					dp_tx_desc_update_fast_comp_flag(soc,
+--- dp_tx_vdev_is_passthru / dp_tx_desc_is_passthru defined:
+qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c.rej:8:+	if (!dp_tx_vdev_is_passthru(vdev) &&
+qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c:2963:	if (dp_tx_vdev_is_passthru(vdev))
+qca-wifi-host-cmn/dp/wifi3.0/dp_tx.h:103:static inline bool dp_tx_desc_is_passthru(const struct dp_tx_desc_s *desc)
+qca-wifi-host-cmn/dp/wifi3.0/dp_tx.h:112:static inline bool dp_tx_vdev_is_passthru(const struct dp_vdev *vdev)
+qca-wifi-host-cmn/dp/wifi3.0/dp_tx.h:2078:	if (dp_tx_vdev_is_passthru(vdev))
+qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c:1337:	if (dp_tx_vdev_is_passthru(vdev)) {

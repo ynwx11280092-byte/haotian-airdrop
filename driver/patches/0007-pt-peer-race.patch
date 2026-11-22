@@ -1,0 +1,557 @@
+--- a/qcacld-3.0/core/wma/src/wma_dev_if.c
++++ b/qcacld-3.0/core/wma/src/wma_dev_if.c
+@@ -2110,28 +2110,47 @@
+ }
+ #endif
+ 
++static QDF_STATUS wma_send_peer_delete(tp_wma_handle wma, uint8_t *peer_addr,
++				      uint8_t vdev_id)
++{
++	struct peer_flush_params flush = {
++		.peer_tid_bitmap = U32_MAX & ~BIT(WMI_MGMT_TID),
++		.vdev_id = vdev_id,
++	};
++	struct peer_delete_cmd_params del = { .vdev_id = vdev_id };
++	struct wlan_objmgr_vdev *vdev = wma->interfaces[vdev_id].vdev;
++
++	if (!wmi_service_enabled(wma->wmi_handle,
++				 wmi_service_peer_delete_no_peer_flush_tids_cmd))
++		wmi_unified_peer_flush_tids_send(wma->wmi_handle, peer_addr, &flush);
++	wlan_roam_debug_log(vdev_id, DEBUG_PEER_DELETE_SEND,
++			    DEBUG_INVALID_PEER_ID, peer_addr, NULL, 0, 0);
++	del.is_mlo_link_switch =
++		wlan_vdev_mlme_is_mlo_link_switch_in_progress(vdev);
++	return wmi_unified_peer_delete_send(wma->wmi_handle, peer_addr, &del);
++}
++
+ /**
+-* wma_remove_peer() - remove peer information from host driver and fw
++ * wma_remove_peer_internal() - remove peer information from host driver and fw
+ * @wma: wma handle
+  * @mac_addr: peer mac address, to be removed
+  * @vdev_id: vdev id
+  * @no_fw_peer_delete: If true dont send peer delete to firmware
++ * @host_detached: Optional result for the one-time host teardown
+  *
+  * Return: QDF_STATUS
+  */
+-QDF_STATUS wma_remove_peer(tp_wma_handle wma, uint8_t *mac_addr,
+-			   uint8_t vdev_id, bool no_fw_peer_delete)
++static QDF_STATUS wma_remove_peer_internal(tp_wma_handle wma, uint8_t *mac_addr,
++					   uint8_t vdev_id,
++					   bool no_fw_peer_delete,
++					   bool *host_detached)
+ {
+-#define PEER_ALL_TID_BITMASK 0xffffffff
+-	uint32_t peer_tid_bitmap = PEER_ALL_TID_BITMASK;
+ 	uint8_t peer_addr[QDF_MAC_ADDR_SIZE] = {0};
+-	struct peer_flush_params param = {0};
+ 	void *soc = cds_get_context(QDF_MODULE_ID_SOC);
+ 	QDF_STATUS qdf_status = QDF_STATUS_SUCCESS;
+ 	uint32_t bitmap = 1 << CDP_PEER_DELETE_NO_SPECIAL;
+ 	bool peer_unmap_conf_support_enabled;
+ 	uint8_t peer_vdev_id;
+-	struct peer_delete_cmd_params del_param = {0};
+ 	struct wma_txrx_node *iface;
+ 	struct wlan_objmgr_peer *peer;
+ 
+@@ -2184,25 +2203,7 @@
+ 	if (no_fw_peer_delete)
+ 		goto peer_detach;
+ 
+-	/* Flush all TIDs except MGMT TID for this peer in Target */
+-	peer_tid_bitmap &= ~(0x1 << WMI_MGMT_TID);
+-	param.peer_tid_bitmap = peer_tid_bitmap;
+-	param.vdev_id = vdev_id;
+-	if (!wmi_service_enabled(wma->wmi_handle,
+-				 wmi_service_peer_delete_no_peer_flush_tids_cmd))
+-		wmi_unified_peer_flush_tids_send(wma->wmi_handle, peer_addr,
+-						 &param);
+-
+-	/* peer->ref_cnt is not visible in WMA */
+-	wlan_roam_debug_log(vdev_id, DEBUG_PEER_DELETE_SEND,
+-			    DEBUG_INVALID_PEER_ID, peer_addr, NULL,
+-			    0, 0);
+-
+-	del_param.vdev_id = vdev_id;
+-	del_param.is_mlo_link_switch =
+-		wlan_vdev_mlme_is_mlo_link_switch_in_progress(iface->vdev);
+-	qdf_status = wmi_unified_peer_delete_send(wma->wmi_handle, peer_addr,
+-						  &del_param);
++	qdf_status = wma_send_peer_delete(wma, peer_addr, vdev_id);
+ 	if (QDF_IS_STATUS_ERROR(qdf_status)) {
+ 		wma_err("Peer delete could not be sent to firmware %d",
+ 			qdf_status);
+@@ -2243,11 +2244,19 @@
+ 	wma_remove_objmgr_peer(wma, iface->vdev, peer_addr);
+ 
+ 	iface->peer_count--;
+-#undef PEER_ALL_TID_BITMASK
++	if (host_detached)
++		*host_detached = true;
+ 
+ 	return qdf_status;
+ }
+ 
++QDF_STATUS wma_remove_peer(tp_wma_handle wma, uint8_t *mac_addr,
++			   uint8_t vdev_id, bool no_fw_peer_delete)
++{
++	return wma_remove_peer_internal(wma, mac_addr, vdev_id,
++					no_fw_peer_delete, NULL);
++}
++
+ /**
+  * wma_get_obj_mgr_peer_type() - Determine the type of peer(eg. STA/AP)
+  * @wma: wma handle
+@@ -2687,7 +2696,8 @@
+ 	bool tx_ready;
+ 	bool delete_issued;
+ 	bool delete_returned;
+-	QDF_STATUS delete_submit;
++	bool delete_host_detached;
++	bool delete_fw_pending;
+ 	bool delete_claimed;
+ 	bool delete_confirmed;
+ 	bool htt_unmap;
+@@ -2747,6 +2757,46 @@
+ 	memset(slot, 0, sizeof(*slot));
+ }
+ 
++/* pandora: stop DP TX to a peer whose DP/firmware state diverged from the host slot. */
++static void wma_pt_slot_conflict_locked(struct wma_pt_peer_state *slot)
++{
++	slot->dp_conflict = true;
++	wma_pt_set_tx_ready_locked(slot, false);
++}
++
++#define WMA_PT_READD_HOLD_MS 2000
++static struct {
++	u8 mac[QDF_MAC_ADDR_SIZE];
++	unsigned long when;
++	bool used;
++} wma_pt_recent_del[WMA_PT_MAX_PEERS];
++static unsigned int wma_pt_recent_del_next;
++
++/* Caller holds wma_pt_peer_lock. */
++static void wma_pt_note_deleted_locked(const u8 *mac)
++{
++	unsigned int i = wma_pt_recent_del_next++ % WMA_PT_MAX_PEERS;
++
++	memcpy(wma_pt_recent_del[i].mac, mac, QDF_MAC_ADDR_SIZE);
++	wma_pt_recent_del[i].when = jiffies;
++	wma_pt_recent_del[i].used = true;
++}
++
++/* Caller holds wma_pt_peer_lock. */
++static bool wma_pt_recently_deleted_locked(const u8 *mac)
++{
++	int i;
++
++	for (i = 0; i < WMA_PT_MAX_PEERS; i++) {
++		if (wma_pt_recent_del[i].used &&
++		    !memcmp(wma_pt_recent_del[i].mac, mac, QDF_MAC_ADDR_SIZE) &&
++		    time_before(jiffies, wma_pt_recent_del[i].when +
++				msecs_to_jiffies(WMA_PT_READD_HOLD_MS)))
++			return true;
++	}
++	return false;
++}
++
+ static struct wma_pt_peer_state *
+ wma_pt_find_slot_wma(tp_wma_handle wma, u32 vdev_id, const u8 *mac)
+ {
+@@ -2792,6 +2842,29 @@
+ 	return NULL;
+ }
+ 
++bool pt_remote_peer_commit_auth(u64 peer_seq, u16 peer_id,
++				void (*authorize)(void *), void *peer)
++{
++	struct wma_pt_peer_state *slot;
++	unsigned long flags;
++	bool committed = false;
++
++	spin_lock_irqsave(&wma_pt_peer_lock, flags);
++	slot = wma_pt_find_slot_seq(peer_seq);
++	if (slot && slot->active && slot->peer_id == peer_id &&
++	    slot->htt_map && slot->slot_installed && slot->ast_valid &&
++	    slot->assoc_confirmed && !slot->assoc_status &&
++	    !slot->dp_conflict && !slot->delete_issued) {
++		authorize(peer);
++		slot->setup_rc = 0;
++		wma_pt_set_tx_ready_locked(slot, true);
++		wma_pt_peer_last = *slot;
++		committed = true;
++	}
++	spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
++	return committed;
++}
++
+ static bool wma_pt_peer_create_event(tp_wma_handle wma, u32 vdev_id,
+ 				     const u8 *mac, u32 status)
+ {
+@@ -2852,7 +2925,7 @@
+ 
+ 	spin_lock_irqsave(&wma_pt_peer_lock, flags);
+ 	slot = wma_pt_find_slot_wma(wma, vdev_id, mac);
+-	if (slot && slot->delete_issued) {
++	if (slot && slot->delete_fw_pending) {
+ 		matched = true;
+ 		if (!slot->delete_claimed) {
+ 			slot->delete_claimed = true;
+@@ -2895,34 +2968,34 @@
+ 
+ 	if (!slot->create_issued || peer_id == U16_MAX ||
+ 	    (slot->htt_map && slot->peer_id != peer_id)) {
+-		slot->dp_conflict = true;
++		wma_pt_slot_conflict_locked(slot);
+ 		goto unlock;
+ 	}
+ 
+ 	switch (event) {
+ 	case PT_REMOTE_HTT_MAP:
+ 		if (slot->htt_unmap || slot->slot_removed)
+-			slot->dp_conflict = true;
++			wma_pt_slot_conflict_locked(slot);
+ 		slot->htt_map = true;
+ 		slot->peer_id = peer_id;
+ 		break;
+ 	case PT_REMOTE_SLOT_INSTALL:
+ 		if (!slot->htt_map || slot->htt_unmap)
+-			slot->dp_conflict = true;
++			wma_pt_slot_conflict_locked(slot);
+ 		else
+ 			slot->slot_installed = true;
+ 		break;
+ 	case PT_REMOTE_HTT_UNMAP:
+-		if (!slot->delete_issued || !slot->slot_installed)
+-			slot->dp_conflict = true;
+-		else
++		if (slot->htt_map && slot->peer_id == peer_id)
+ 			slot->htt_unmap = true;
++		if (!slot->delete_issued || !slot->slot_installed)
++			wma_pt_slot_conflict_locked(slot);
+ 		break;
+ 	case PT_REMOTE_SLOT_REMOVE:
+-		if (!slot->delete_issued || !slot->slot_installed)
+-			slot->dp_conflict = true;
+-		else
++		if (slot->htt_map && slot->peer_id == peer_id)
+ 			slot->slot_removed = true;
++		if (!slot->delete_issued || !slot->slot_installed)
++			wma_pt_slot_conflict_locked(slot);
+ 		break;
+ 	}
+ unlock:
+@@ -2940,8 +3013,10 @@
+ 
+ 	spin_lock_irqsave(&wma_pt_peer_lock, flags);
+ 	slot = wma_pt_find_slot_dp(psoc, vdev_id, mac);
+-	if (slot && peer_id != U16_MAX && ast_idx != U16_MAX) {
+-		slot->peer_id = peer_id;
++	if (slot && slot->htt_map && slot->peer_id != peer_id)
++		wma_pt_slot_conflict_locked(slot);
++	if (slot && slot->htt_map && slot->peer_id == peer_id &&
++	    ast_idx != U16_MAX) {
+ 		slot->ast_idx = ast_idx;
+ 		slot->ast_hash = ast_hash;
+ 		slot->ast_valid = true;
+@@ -3047,7 +3122,7 @@
+ 	slot = wma_pt_find_slot_seq(peer_seq);
+ 	if (slot) {
+ 		if (slot->create_issued && !slot->delete_issued)
+-			slot->dp_conflict = true;
++			wma_pt_slot_conflict_locked(slot);
+ 		if (obj == PT_REMOTE_DP_OBJECT)
+ 			slot->dp_released = true;
+ 		else
+@@ -3075,19 +3150,36 @@
+ 	spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
+ }
+ 
++static bool wma_pt_create_rejected(const struct wma_pt_peer_state *slot)
++{
++	/* A map contradicts a failed create. Require a firmware delete then. */
++	if (!slot->create_returned || slot->htt_map ||
++	    slot->slot_installed || slot->ast_valid)
++		return false;
++	if (slot->create_confirmed)
++		return slot->create_status != 0;
++	return QDF_IS_STATUS_ERROR(slot->create_submit);
++}
++
++static bool wma_pt_delete_complete(const struct wma_pt_peer_state *slot)
++{
++	return slot->dp_released && slot->obj_released &&
++	       (wma_pt_create_rejected(slot) || slot->delete_confirmed) &&
++	       (!slot->slot_installed ||
++		(slot->htt_unmap && slot->slot_removed));
++}
++
+ /* Caller holds wma_pt_peer_ops_lock. */
+ static int wma_pt_remote_peer_del_slot_locked(tp_wma_handle wma,
+ 					      struct wlan_objmgr_vdev *vdev,
+ 					      struct wma_pt_peer_state *slot)
+ {
+-	struct wma_pt_peer_state snap;
+ 	u8 remote_mac[QDF_MAC_ADDR_SIZE];
+ 	unsigned long flags, deadline;
+ 	QDF_STATUS status;
+ 	u64 peer_seq;
+ 	u8 vdev_id;
+-	bool no_fw_del;
+-	bool done;
++	bool host_detached, local_released, send_fw;
+ 	int rc = -ETIMEDOUT;
+ 
+ 	spin_lock_irqsave(&wma_pt_peer_lock, flags);
+@@ -3106,22 +3198,47 @@
+ 		return 0;
+ 	}
+ 	if (!wma || !vdev || vdev_id >= wma->max_bssid ||
+-	    wma->interfaces[vdev_id].vdev != vdev ||
+-	    slot->delete_issued) {
+-		slot->teardown_rc = -EINVAL;
+-		wma_pt_peer_last = *slot;
++	    wma->interfaces[vdev_id].vdev != vdev) {
++		rc = -EINVAL;
+ 		spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
+-		return -EINVAL;
++		goto out;
++	}
++	if (cds_is_driver_recovering()) {
++		rc = -ESHUTDOWN;
++		spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
++		goto out;
+ 	}
+-	no_fw_del = QDF_IS_STATUS_ERROR(slot->create_submit) ||
+-		    (slot->create_confirmed && slot->create_status != 0);
++	if (slot->delete_issued && !slot->delete_returned) {
++		spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
++		return -EBUSY;
++	}
++
++	host_detached = slot->delete_host_detached;
++	local_released = slot->dp_released && slot->obj_released;
++	send_fw = !wma_pt_create_rejected(slot) && !slot->delete_confirmed &&
++		  !slot->delete_fw_pending;
++	if ((host_detached || local_released) && !send_fw) {
++		spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
++		goto wait_release;
++	}
++
+ 	slot->delete_issued = true;
++	slot->delete_returned = false;
++	if (send_fw)
++		slot->delete_fw_pending = true;
+ 	spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
+-	smp_mb();
+ 
+-	status = wma_remove_peer(wma, remote_mac, vdev_id, no_fw_del);
++	/* Retry a failed WMI submit without tearing the host peer down twice. */
++	if (host_detached || local_released)
++		status = wma_send_peer_delete(wma, remote_mac, vdev_id);
++	else
++		status = wma_remove_peer_internal(wma, remote_mac, vdev_id,
++						  !send_fw, &host_detached);
++
+ 	spin_lock_irqsave(&wma_pt_peer_lock, flags);
+-	slot->delete_submit = status;
++	slot->delete_host_detached = host_detached;
++	if (send_fw && QDF_IS_STATUS_ERROR(status) && !slot->delete_claimed)
++		slot->delete_fw_pending = false;
+ 	slot->delete_returned = true;
+ 	spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
+ 	if (QDF_IS_STATUS_ERROR(status)) {
+@@ -3129,6 +3246,7 @@
+ 		goto out;
+ 	}
+ 
++wait_release:
+ 	deadline = jiffies + msecs_to_jiffies(WMA_PT_PEER_WAIT_MS);
+ 	do {
+ 		if (cds_is_driver_recovering()) {
+@@ -3136,25 +3254,15 @@
+ 			break;
+ 		}
+ 		spin_lock_irqsave(&wma_pt_peer_lock, flags);
+-		snap = *slot;
+-		spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
+-		if (snap.dp_conflict) {
+-			rc = -EIO;
+-			break;
+-		}
+-		if (snap.slot_installed)
+-			done = snap.delete_confirmed && snap.htt_unmap &&
+-			       snap.slot_removed && snap.dp_released &&
+-			       snap.obj_released;
+-		else if (no_fw_del)
+-			done = snap.dp_released && snap.obj_released;
+-		else
+-			done = snap.delete_confirmed && snap.dp_released &&
+-			       snap.obj_released;
+-		if (done) {
+-			rc = 0;
+-			break;
++		/* A conflict stops TX. Confirmations still count during teardown. */
++		if (wma_pt_delete_complete(slot)) {
++			slot->teardown_rc = 0;
++			wma_pt_note_deleted_locked(slot->mac);
++			wma_pt_clear_slot_locked(slot);
++			spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
++			return 0;
+ 		}
++		spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
+ 		usleep_range(2000, 4000);
+ 	} while (time_before(jiffies, deadline));
+ 
+@@ -3163,12 +3271,8 @@
+ 	slot = wma_pt_find_slot_seq(peer_seq);
+ 	if (slot) {
+ 		slot->teardown_rc = rc;
+-		if (rc == 0) {
+-			wma_pt_clear_slot_locked(slot);
+-		} else {
+-			slot->active = true;
+-			wma_pt_peer_last = *slot;
+-		}
++		slot->active = true;
++		wma_pt_peer_last = *slot;
+ 	}
+ 	spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
+ 	return rc;
+@@ -3379,6 +3483,11 @@
+ 	}
+ 
+ 	spin_lock_irqsave(&wma_pt_peer_lock, flags);
++	if (wma_pt_recently_deleted_locked(remote_copy)) {
++		spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
++		rc = -EBUSY;
++		goto unlock_ops;
++	}
+ 	for (i = 0; i < WMA_PT_MAX_PEERS; i++) {
+ 		struct wma_pt_peer_state *s = &wma_pt_peers[i];
+ 
+@@ -3555,17 +3664,11 @@
+ 		pt_fw_addba_rc = qdf_status_to_os_return(status);
+ 		pt_fw_addba_sent = QDF_IS_STATUS_SUCCESS(status);
+ 	}
+-	status = cdp_peer_state_update(soc, remote_copy, OL_TXRX_PEER_STATE_AUTH);
+-	if (QDF_IS_STATUS_ERROR(status)) {
+-		rc = qdf_status_to_os_return(status);
++	if (!dp_pt_remote_peer_authorize(soc, vdev_id, remote_copy,
++					 snap.peer_id, snap.peer_seq)) {
++		rc = -EIO;
+ 		goto rollback;
+ 	}
+-
+-	spin_lock_irqsave(&wma_pt_peer_lock, flags);
+-	slot->setup_rc = 0;
+-	wma_pt_set_tx_ready_locked(slot, true);
+-	wma_pt_peer_last = *slot;
+-	spin_unlock_irqrestore(&wma_pt_peer_lock, flags);
+ 	mutex_unlock(&wma_pt_peer_ops_lock);
+ 	return 0;
+ 
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+@@ -7955,7 +7955,9 @@
+ 		return QDF_STATUS_E_FAILURE;
+ 	}
+ 
++	qdf_spin_lock_bh(&peer->peer_state_lock);
+ 	if (!peer->valid) {
++		qdf_spin_unlock_bh(&peer->peer_state_lock);
+ 		dp_peer_unref_delete(peer, DP_MOD_ID_CDP);
+ 		dp_err("Invalid peer: "QDF_MAC_ADDR_FMT,
+ 			QDF_MAC_ADDR_REF(peer_mac));
+@@ -7965,11 +7967,13 @@
+ 	vdev = peer->vdev;
+ 
+ 	if (!vdev) {
++		qdf_spin_unlock_bh(&peer->peer_state_lock);
+ 		dp_peer_unref_delete(peer, DP_MOD_ID_CDP);
+ 		return QDF_STATUS_E_FAILURE;
+ 	}
+ 
+ 	peer->valid = 0;
++	qdf_spin_unlock_bh(&peer->peer_state_lock);
+ 
+ 	dp_rx_fst_inv_peer_id(soc, peer);
+ 	dp_cfg_event_record_peer_evt(soc, DP_CFG_EVENT_PEER_DELETE, peer,
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_peer.c
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_peer.c
+@@ -969,6 +969,45 @@
+ 	}
+ }
+ 
++#ifdef DRIVER_PASSTHRU_OWNER
++static void dp_pt_authorize(void *context)
++{
++	struct dp_peer *peer = context;
++
++	peer->state = OL_TXRX_PEER_STATE_AUTH;
++	peer->authorize = 1;
++	peer->txrx_peer->authorize = 1;
++}
++
++bool dp_pt_remote_peer_authorize(struct cdp_soc_t *soc_hdl, u8 vdev_id,
++				const u8 *mac, u16 peer_id, u64 peer_seq)
++{
++	struct dp_soc *soc = cdp_soc_t_to_dp_soc(soc_hdl);
++	struct dp_peer *peer;
++	bool committed = false;
++
++	if (peer_id == HTT_INVALID_PEER || peer_id > soc->max_peer_id)
++		return false;
++
++	/* The map holds the DP reference. Use map -> peer state -> WMA order. */
++	qdf_spin_lock_bh(&soc->peer_map_lock);
++	peer = soc->peer_id_to_obj_map[peer_id];
++	if (peer && peer->peer_id == peer_id && peer->vdev &&
++	    peer->vdev->vdev_id == vdev_id &&
++	    !qdf_mem_cmp(peer->mac_addr.raw, mac, QDF_MAC_ADDR_SIZE)) {
++		qdf_spin_lock_bh(&peer->peer_state_lock);
++		if (peer->valid && peer->peer_state == DP_PEER_STATE_ACTIVE &&
++		    peer->txrx_peer && !IS_MLO_DP_LINK_PEER(peer))
++			committed = pt_remote_peer_commit_auth(peer_seq, peer_id,
++							      dp_pt_authorize,
++							      peer);
++		qdf_spin_unlock_bh(&peer->peer_state_lock);
++	}
++	qdf_spin_unlock_bh(&soc->peer_map_lock);
++	return committed;
++}
++#endif
++
+ void dp_peer_find_id_to_obj_remove(struct dp_soc *soc,
+ 				   uint16_t peer_id)
+ {
+@@ -3564,9 +3603,10 @@
+ 
+ 	vdev = peer->vdev;
+ #ifdef DRIVER_PASSTHRU_OWNER
+-	pt_remote_peer_dp_event(soc->ctrl_psoc, vdev->vdev_id,
+-				peer->mac_addr.raw, peer_id,
+-				PT_REMOTE_HTT_UNMAP);
++	if (!is_wds)
++		pt_remote_peer_dp_event(soc->ctrl_psoc, vdev->vdev_id,
++					peer->mac_addr.raw, peer_id,
++					PT_REMOTE_HTT_UNMAP);
+ #endif
+ 
+ 	if (peer->txrx_peer) {
+--- a/qca-wifi-host-cmn/qdf/inc/qdf_pt_remote_peer.h
++++ b/qca-wifi-host-cmn/qdf/inc/qdf_pt_remote_peer.h
+@@ -29,4 +29,11 @@
+ u64 pt_remote_peer_release_key(const void *psoc, u8 vdev_id, const u8 *mac);
+ void pt_remote_peer_released(u64 generation, enum pt_remote_peer_object obj);
+ 
++struct cdp_soc_t;
++bool dp_pt_remote_peer_authorize(struct cdp_soc_t *soc_hdl, u8 vdev_id,
++				const u8 *mac, u16 peer_id, u64 peer_seq);
++/* The synchronous callback updates DP state under the WMA slot lock. */
++bool pt_remote_peer_commit_auth(u64 peer_seq, u16 peer_id,
++				void (*authorize)(void *), void *peer);
++
+ #endif

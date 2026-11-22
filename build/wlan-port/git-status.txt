@@ -1,0 +1,198 @@
+ M fw-api/fw/wmi_unified.h
+ M qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn.h
+ M qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h
+ M qca-wifi-host-cmn/dp/inc/cdp_txrx_ops.h
+ M qca-wifi-host-cmn/dp/wifi3.0/be/dp_be.c
+ M qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_rx.c
+ M qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_htt.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_peer.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_rings_main.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_rx.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_rx.h
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_rx_buffer_pool.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_rx_err.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_rx_tid.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_tx.h
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_tx_desc.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_tx_desc.h
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_tx_flow_control.c
+ M qca-wifi-host-cmn/dp/wifi3.0/dp_types.h
+ M qca-wifi-host-cmn/hal/wifi3.0/hal_internal.h
+ M qca-wifi-host-cmn/hal/wifi3.0/hal_rx.h
+ M qca-wifi-host-cmn/hal/wifi3.0/kiwi/hal_kiwi.c
+ M qca-wifi-host-cmn/qdf/inc/qdf_nbuf.h
+ M qca-wifi-host-cmn/qdf/inc/qdf_types.h
+ M qca-wifi-host-cmn/qdf/linux/src/i_qdf_nbuf.h
+ M qca-wifi-host-cmn/qdf/linux/src/qdf_nbuf.c
+ M qca-wifi-host-cmn/qdf/src/qdf_types.c
+ M qca-wifi-host-cmn/scheduler/inc/scheduler_core.h
+ M qca-wifi-host-cmn/scheduler/src/scheduler_api.c
+ M qca-wifi-host-cmn/scheduler/src/scheduler_core.c
+ M qca-wifi-host-cmn/target_if/mlme/vdev_mgr/src/target_if_vdev_mgr_rx_ops.c
+ M qca-wifi-host-cmn/target_if/mlme/vdev_mgr/src/target_if_vdev_mgr_tx_ops.c
+ M qca-wifi-host-cmn/umac/cmn_services/obj_mgr/src/wlan_objmgr_peer_obj.c
+ M qca-wifi-host-cmn/umac/cmn_services/obj_mgr/src/wlan_objmgr_vdev_obj.c
+ M qca-wifi-host-cmn/umac/mlme/include/wlan_vdev_mlme.h
+ M qca-wifi-host-cmn/umac/mlme/vdev_mgr/core/src/vdev_mgr_ops.c
+ M qca-wifi-host-cmn/umac/mlme/vdev_mgr/core/src/vdev_mlme_sm.h
+ M qca-wifi-host-cmn/umac/mlme/vdev_mgr/dispatcher/inc/wlan_vdev_mgr_api.h
+ M qca-wifi-host-cmn/umac/mlme/vdev_mgr/dispatcher/inc/wlan_vdev_mgr_tgt_if_rx_defs.h
+ M qca-wifi-host-cmn/umac/mlme/vdev_mgr/dispatcher/inc/wlan_vdev_mgr_tgt_if_tx_defs.h
+ M qca-wifi-host-cmn/umac/mlme/vdev_mgr/dispatcher/src/wlan_vdev_mgr_api.c
+ M qca-wifi-host-cmn/umac/mlme/vdev_mgr/dispatcher/src/wlan_vdev_mgr_utils_api.c
+ M qca-wifi-host-cmn/wlan_cfg/wlan_cfg.c
+ M qca-wifi-host-cmn/wlan_cfg/wlan_cfg.h
+ M qca-wifi-host-cmn/wmi/src/wmi_unified_11be_tlv.c
+ M qca-wifi-host-cmn/wmi/src/wmi_unified_tlv.c
+ M qcacld-3.0/Kbuild
+ M qcacld-3.0/Kconfig
+ M qcacld-3.0/components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h
+ M qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c
+ M qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_pcl.c
+ M qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_tables_1x1_dbs_i.h
+ M qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_tables_2x2_dbs_i.h
+ M qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_tables_2x2_dbs_sbs_i.h
+ M qcacld-3.0/components/mlme/core/src/wlan_mlme_vdev_mgr_interface.c
+ M qcacld-3.0/components/umac/mlme/connection_mgr/dispatcher/inc/wlan_cm_roam_public_struct.h
+ M qcacld-3.0/configs/config_to_feature.h
+ M qcacld-3.0/core/cds/src/cds_api.c
+ M qcacld-3.0/core/hdd/inc/wlan_hdd_driver_ops.h
+ M qcacld-3.0/core/hdd/inc/wlan_hdd_main.h
+ M qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c
+ M qcacld-3.0/core/hdd/src/wlan_hdd_driver_ops.c
+ M qcacld-3.0/core/hdd/src/wlan_hdd_hostapd.c
+ M qcacld-3.0/core/hdd/src/wlan_hdd_main.c
+ M qcacld-3.0/core/hdd/src/wlan_hdd_p2p.c
+ M qcacld-3.0/core/hdd/src/wlan_hdd_power.c
+ M qcacld-3.0/core/hdd/src/wlan_hdd_scan.c
+ M qcacld-3.0/core/hdd/src/wlan_hdd_sysfs.c
+ M qcacld-3.0/core/mac/inc/sir_api.h
+ M qcacld-3.0/core/mac/inc/wni_api.h
+ M qcacld-3.0/core/mac/src/cfg/cfgUtil/dot11f.frms
+ M qcacld-3.0/core/mac/src/pe/include/lim_api.h
+ M qcacld-3.0/core/mac/src/pe/include/lim_global.h
+ M qcacld-3.0/core/mac/src/pe/lim/lim_api.c
+ M qcacld-3.0/core/mac/src/pe/lim/lim_process_message_queue.c
+ M qcacld-3.0/core/mac/src/pe/lim/lim_process_mlm_rsp_messages.c
+ M qcacld-3.0/core/mac/src/pe/lim/lim_process_sme_req_messages.c
+ M qcacld-3.0/core/mac/src/pe/lim/lim_session.c
+ M qcacld-3.0/core/mac/src/pe/lim/lim_utils.c
+ M qcacld-3.0/core/mac/src/sys/legacy/src/utils/src/dot11f.c
+ M qcacld-3.0/core/sme/inc/sme_api.h
+ M qcacld-3.0/core/sme/inc/sme_internal.h
+ M qcacld-3.0/core/sme/src/common/sme_api.c
+ M qcacld-3.0/core/sme/src/csr/csr_api_roam.c
+ M qcacld-3.0/core/wma/inc/wma.h
+ M qcacld-3.0/core/wma/inc/wma_api.h
+ M qcacld-3.0/core/wma/src/wma_dev_if.c
+ M qcacld-3.0/core/wma/src/wma_utils.c
+?? fw-api/fw/wmi_unified.h.orig
+?? qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn.h.orig
+?? qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h.orig
+?? qca-wifi-host-cmn/dp/inc/cdp_txrx_ops.h.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/be/dp_be.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_rx.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c.rej
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_htt.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_main.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_passthru_receipts.h
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_peer.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_pt_rate_observer.h
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_pt_rx_phy.h
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_rings_main.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_rx.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_rx.h.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_rx_buffer_pool.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_rx_err.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_tx.h.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_tx_desc.h.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_tx_flow_control.c.orig
+?? qca-wifi-host-cmn/dp/wifi3.0/dp_types.h.orig
+?? qca-wifi-host-cmn/hal/wifi3.0/hal_internal.h.orig
+?? qca-wifi-host-cmn/hal/wifi3.0/hal_rx.h.orig
+?? qca-wifi-host-cmn/hal/wifi3.0/kiwi/hal_kiwi.c.orig
+?? qca-wifi-host-cmn/qdf/inc/qdf_nbuf.h.orig
+?? qca-wifi-host-cmn/qdf/inc/qdf_pt_remote_peer.h
+?? qca-wifi-host-cmn/qdf/inc/qdf_types.h.orig
+?? qca-wifi-host-cmn/qdf/inc/qdf_wondertap.h
+?? qca-wifi-host-cmn/qdf/linux/src/i_qdf_nbuf.h.orig
+?? qca-wifi-host-cmn/qdf/linux/src/i_qdf_wondertap.h
+?? qca-wifi-host-cmn/qdf/linux/src/qdf_nbuf.c.orig
+?? qca-wifi-host-cmn/target_if/mlme/vdev_mgr/src/target_if_vdev_mgr_rx_ops.c.orig
+?? qca-wifi-host-cmn/target_if/mlme/vdev_mgr/src/target_if_vdev_mgr_tx_ops.c.orig
+?? qca-wifi-host-cmn/umac/cmn_services/obj_mgr/src/wlan_objmgr_vdev_obj.c.orig
+?? qca-wifi-host-cmn/umac/mlme/include/wlan_passthru_stop.h
+?? qca-wifi-host-cmn/umac/mlme/include/wlan_passthru_txn.h
+?? qca-wifi-host-cmn/umac/mlme/include/wlan_vdev_mlme.h.orig
+?? qca-wifi-host-cmn/umac/mlme/vdev_mgr/core/src/vdev_mgr_ops.c.orig
+?? qca-wifi-host-cmn/umac/mlme/vdev_mgr/core/src/vdev_mlme_sm.h.orig
+?? qca-wifi-host-cmn/umac/mlme/vdev_mgr/dispatcher/inc/wlan_vdev_mgr_tgt_if_rx_defs.h.orig
+?? qca-wifi-host-cmn/umac/mlme/vdev_mgr/dispatcher/inc/wlan_vdev_mgr_tgt_if_tx_defs.h.orig
+?? qca-wifi-host-cmn/wlan_cfg/wlan_cfg.c.orig
+?? qca-wifi-host-cmn/wlan_cfg/wlan_cfg.h.orig
+?? qca-wifi-host-cmn/wmi/src/wmi_unified_11be_tlv.c.orig
+?? qca-wifi-host-cmn/wmi/src/wmi_unified_tlv.c.orig
+?? qcacld-3.0/Kbuild.orig
+?? qcacld-3.0/components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h.orig
+?? qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c.orig
+?? qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_pcl.c.orig
+?? qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_tables_2x2_dbs_i.h.orig
+?? qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_tables_2x2_dbs_sbs_i.h.orig
+?? qcacld-3.0/components/dp/core/src/wlan_dp_passthru.c
+?? qcacld-3.0/components/dp/dispatcher/inc/wlan_dp_passthru.h
+?? qcacld-3.0/components/mlme/core/src/wlan_mlme_vdev_mgr_interface.c.orig
+?? qcacld-3.0/components/umac/mlme/connection_mgr/dispatcher/inc/wlan_cm_roam_public_struct.h.orig
+?? qcacld-3.0/configs/config_to_feature.h.orig
+?? qcacld-3.0/core/cds/src/cds_api.c.orig
+?? qcacld-3.0/core/hdd/inc/cnss_wonder_lifecycle.h
+?? qcacld-3.0/core/hdd/inc/wlan_hdd_main.h.orig
+?? qcacld-3.0/core/hdd/inc/wlan_hdd_passthru_control.h
+?? qcacld-3.0/core/hdd/inc/wlan_hdd_passthru_experiment.h
+?? qcacld-3.0/core/hdd/inc/wlan_hdd_passthru_iface.h
+?? qcacld-3.0/core/hdd/inc/wlan_hdd_passthru_owner.h
+?? qcacld-3.0/core/hdd/inc/wlan_hdd_passthru_runtime.h
+?? qcacld-3.0/core/hdd/inc/wlan_hdd_passthru_vdev.h
+?? qcacld-3.0/core/hdd/inc/wlan_hdd_wonder_handoff.h
+?? qcacld-3.0/core/hdd/inc/wonder/
+?? qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c.orig
+?? qcacld-3.0/core/hdd/src/wlan_hdd_driver_ops.c.orig
+?? qcacld-3.0/core/hdd/src/wlan_hdd_fast_connect_compat.inc
+?? qcacld-3.0/core/hdd/src/wlan_hdd_hostapd.c.orig
+?? qcacld-3.0/core/hdd/src/wlan_hdd_main.c.orig
+?? qcacld-3.0/core/hdd/src/wlan_hdd_p2p.c.orig
+?? qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c
+?? qcacld-3.0/core/hdd/src/wlan_hdd_passthru_iface.c
+?? qcacld-3.0/core/hdd/src/wlan_hdd_passthru_owner.c
+?? qcacld-3.0/core/hdd/src/wlan_hdd_passthru_runtime.c
+?? qcacld-3.0/core/hdd/src/wlan_hdd_power.c.orig
+?? qcacld-3.0/core/hdd/src/wlan_hdd_scan.c.orig
+?? qcacld-3.0/core/hdd/src/wlan_hdd_sysfs.c.orig
+?? qcacld-3.0/core/hdd/src/wlan_hdd_wonder_handoff.c
+?? qcacld-3.0/core/mac/inc/sir_api.h.orig
+?? qcacld-3.0/core/mac/inc/wni_api.h.orig
+?? qcacld-3.0/core/mac/src/cfg/cfgUtil/dot11f.frms.orig
+?? qcacld-3.0/core/mac/src/include/dot11f_fast_connect_compat.h
+?? qcacld-3.0/core/mac/src/include/sme_passthru_request.h
+?? qcacld-3.0/core/mac/src/pe/include/lim_api.h.orig
+?? qcacld-3.0/core/mac/src/pe/lim/lim_api.c.orig
+?? qcacld-3.0/core/mac/src/pe/lim/lim_process_message_queue.c.orig
+?? qcacld-3.0/core/mac/src/pe/lim/lim_process_mlm_rsp_messages.c.orig
+?? qcacld-3.0/core/mac/src/pe/lim/lim_process_sme_req_messages.c.orig
+?? qcacld-3.0/core/mac/src/pe/lim/lim_session.c.orig
+?? qcacld-3.0/core/mac/src/pe/lim/lim_utils.c.orig
+?? qcacld-3.0/core/mac/src/sys/legacy/src/utils/src/dot11f.c.orig
+?? qcacld-3.0/core/mac/src/sys/legacy/src/utils/src/dot11f_fast_connect_compat.inc
+?? qcacld-3.0/core/sme/inc/sme_api.h.orig
+?? qcacld-3.0/core/sme/inc/sme_internal.h.orig
+?? qcacld-3.0/core/sme/src/common/sme_api.c.orig
+?? qcacld-3.0/core/sme/src/csr/csr_api_roam.c.orig
+?? qcacld-3.0/core/wma/inc/wma.h.orig
+?? qcacld-3.0/core/wma/inc/wma_api.h.orig
+?? qcacld-3.0/core/wma/src/wma_dev_if.c.orig
+?? qcacld-3.0/core/wma/src/wma_utils.c.orig
+?? qcacld-3.0/offline-build-declarations.h

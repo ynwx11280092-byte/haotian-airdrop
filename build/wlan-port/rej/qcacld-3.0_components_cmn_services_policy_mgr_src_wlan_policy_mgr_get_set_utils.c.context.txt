@@ -1,0 +1,27 @@
+######## FILE: qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c
+######## REJ:
+--- qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c
++++ qcacld-3.0/components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c
+@@ -5716,7 +5725,18 @@ void policy_mgr_incr_active_session(struct wlan_objmgr_psoc *psoc,
+ 
+ 	policy_mgr_debug("No.# of active sessions for mode %d = %d",
+ 		mode, pm_ctx->no_of_active_sessions[mode]);
+-	policy_mgr_incr_connection_count(psoc, session_id, mode);
++
++	if (mode == QDF_PASSTHRU_MODE) {
++		if (QDF_IS_STATUS_ERROR(policy_mgr_incr_connection_count(psoc, session_id, mode))) {
++			pm_ctx->no_of_active_sessions[mode]--;
++			qdf_mutex_release(&pm_ctx->qdf_conc_list_lock);
++			if (pm_ctx->dp_cbacks.hdd_v2_flow_pool_unmap)
++				pm_ctx->dp_cbacks.hdd_v2_flow_pool_unmap(session_id);
++			return;
++		}
++	} else {
++		policy_mgr_incr_connection_count(psoc, session_id, mode);
++	}
+ 
+ 	if ((policy_mgr_mode_specific_connection_count(
+ 		psoc, PM_STA_MODE, NULL) > 0) && (mode != QDF_STA_MODE)) {
+
+######## CURRENT FILE CONTEXT:
+---- hunk header: 3:@@ -5716,7 +5725,18 @@ void policy_mgr_incr_active_session(struct wlan_objmgr_psoc *psoc,

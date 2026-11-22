@@ -1,0 +1,27 @@
+=== FILE: qcacld-3.0/core/hdd/src/wlan_hdd_driver_ops.c
+
+<<<<<<<
+=======
+	hdd_start_complete(errno);
+#ifdef DRIVER_PASSTHRU_RUNTIME
+	if (hdd_pt_driver_teardown_status()) {
+		/* HDD context is retained: its registered sync parent stays too.
+		 * This wrapper acquired the transition; stop only that transition.
+		 */
+		osif_psoc_sync_trans_stop(psoc_sync);
+		return errno;
+	}
+#endif
+>>>>>>>
+
+---
+<<<<<<<
+		hdd_wlan_exit(hdd_ctx);
+=======
+		hdd_ddr_bw_mitigation_unregister(hdd_ctx, dev);
+		ret = hdd_wlan_exit(hdd_ctx);
+		if (ret)
+			return ret;
+>>>>>>>
+
+---

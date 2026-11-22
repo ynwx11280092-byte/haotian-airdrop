@@ -1,0 +1,23 @@
+=== FILE: qca-wifi-host-cmn/dp/wifi3.0/dp_types.h
+
+<<<<<<<
+=======
+	/* Tx NSS stats received from FW */
+	struct cdp_htt_stats_tx_vdev_nss_tlv tx_vdev_nss;
+	struct dp_ul_delay_stats prev_delay_stats;
+#ifdef DRIVER_PASSTHRU_DP
+	/* Callback pointers stay immutable until the final delete notification. */
+	qdf_spinlock_t passthru_lock;
+	enum dp_passthru_state passthru_state;
+	uint32_t passthru_users;
+	uint16_t passthru_freq;
+	bool passthru_arch_attached;
+	bool passthru_paused;
+#endif
+#ifdef DRIVER_PASSTHRU_OWNER
+	/* Owed from attach admission through both delete callbacks. */
+	bool passthru_receipt_owed;
+#endif
+>>>>>>>
+
+---

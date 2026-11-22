@@ -1,0 +1,18 @@
+=== FILE: qcacld-3.0/core/wma/inc/wma_api.h
+
+<<<<<<<
+=======
+	return WMI_HOST_ACTIVE_APF_DISABLED;
+}
+#endif /* FEATURE_WLAN_APF */
+#ifdef DRIVER_PASSTHRU_SESSION
+QDF_STATUS wma_passthru_vdev_stop_send(struct vdev_mlme_obj *, uint16_t, void *);
+QDF_STATUS wma_passthru_vdev_stop_resp(struct vdev_mlme_obj *, struct vdev_stop_response *);
+QDF_STATUS wma_passthru_vdev_down_send(struct vdev_mlme_obj *, uint16_t, void *);
+void wma_passthru_vdev_init_down(struct vdev_mlme_obj *);
+#endif
+
+
+>>>>>>>
+
+---

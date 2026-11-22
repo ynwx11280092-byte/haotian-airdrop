@@ -1,0 +1,28 @@
+######## FILE: qcacld-3.0/core/hdd/src/wlan_hdd_driver_ops.c
+######## REJ:
+--- qcacld-3.0/core/hdd/src/wlan_hdd_driver_ops.c
++++ qcacld-3.0/core/hdd/src/wlan_hdd_driver_ops.c
+@@ -1151,12 +1272,18 @@ static void __hdd_soc_remove(struct device *dev)
+ 		hdd_warn("Debugfs threads are still active attempting driver unload anyway");
+ 
+ 	if (hdd_get_conparam() == QDF_GLOBAL_EPPING_MODE) {
+-		hdd_wlan_stop_modules(hdd_ctx, false);
++		ret = hdd_wlan_stop_modules(hdd_ctx, false);
++#ifdef DRIVER_PASSTHRU_RUNTIME
++		if (ret)
++			return ret;
++#endif
+ 		qdf_nbuf_deinit_replenish_timer();
+ 	} else {
+ 		hdd_thermal_mitigation_unregister(hdd_ctx, dev);
+ 		hdd_ddr_bw_mitigation_unregister(hdd_ctx, dev);
+-		hdd_wlan_exit(hdd_ctx);
++		ret = hdd_wlan_exit(hdd_ctx);
++		if (ret)
++			return ret;
+ 	}
+ 
+ 	hdd_context_destroy(hdd_ctx);
+
+######## CURRENT FILE CONTEXT:
+---- hunk header: 3:@@ -1151,12 +1272,18 @@ static void __hdd_soc_remove(struct device *dev)

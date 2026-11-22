@@ -1,0 +1,172 @@
+######## FILE: qcacld-3.0/core/wma/src/wma_dev_if.c
+######## REJ:
+--- qcacld-3.0/core/wma/src/wma_dev_if.c
++++ qcacld-3.0/core/wma/src/wma_dev_if.c
+@@ -2110,28 +2110,47 @@
+ }
+ #endif
+ 
++static QDF_STATUS wma_send_peer_delete(tp_wma_handle wma, uint8_t *peer_addr,
++				      uint8_t vdev_id)
++{
++	struct peer_flush_params flush = {
++		.peer_tid_bitmap = U32_MAX & ~BIT(WMI_MGMT_TID),
++		.vdev_id = vdev_id,
++	};
++	struct peer_delete_cmd_params del = { .vdev_id = vdev_id };
++	struct wlan_objmgr_vdev *vdev = wma->interfaces[vdev_id].vdev;
++
++	if (!wmi_service_enabled(wma->wmi_handle,
++				 wmi_service_peer_delete_no_peer_flush_tids_cmd))
++		wmi_unified_peer_flush_tids_send(wma->wmi_handle, peer_addr, &flush);
++	wlan_roam_debug_log(vdev_id, DEBUG_PEER_DELETE_SEND,
++			    DEBUG_INVALID_PEER_ID, peer_addr, NULL, 0, 0);
++	del.is_mlo_link_switch =
++		wlan_vdev_mlme_is_mlo_link_switch_in_progress(vdev);
++	return wmi_unified_peer_delete_send(wma->wmi_handle, peer_addr, &del);
++}
++
+ /**
+-* wma_remove_peer() - remove peer information from host driver and fw
++ * wma_remove_peer_internal() - remove peer information from host driver and fw
+ * @wma: wma handle
+  * @mac_addr: peer mac address, to be removed
+  * @vdev_id: vdev id
+  * @no_fw_peer_delete: If true dont send peer delete to firmware
++ * @host_detached: Optional result for the one-time host teardown
+  *
+  * Return: QDF_STATUS
+  */
+-QDF_STATUS wma_remove_peer(tp_wma_handle wma, uint8_t *mac_addr,
+-			   uint8_t vdev_id, bool no_fw_peer_delete)
++static QDF_STATUS wma_remove_peer_internal(tp_wma_handle wma, uint8_t *mac_addr,
++					   uint8_t vdev_id,
++					   bool no_fw_peer_delete,
++					   bool *host_detached)
+ {
+-#define PEER_ALL_TID_BITMASK 0xffffffff
+-	uint32_t peer_tid_bitmap = PEER_ALL_TID_BITMASK;
+ 	uint8_t peer_addr[QDF_MAC_ADDR_SIZE] = {0};
+-	struct peer_flush_params param = {0};
+ 	void *soc = cds_get_context(QDF_MODULE_ID_SOC);
+ 	QDF_STATUS qdf_status = QDF_STATUS_SUCCESS;
+ 	uint32_t bitmap = 1 << CDP_PEER_DELETE_NO_SPECIAL;
+ 	bool peer_unmap_conf_support_enabled;
+ 	uint8_t peer_vdev_id;
+-	struct peer_delete_cmd_params del_param = {0};
+ 	struct wma_txrx_node *iface;
+ 	struct wlan_objmgr_peer *peer;
+ 
+
+######## CURRENT (function region):
+  2080						     wma_peer_unmap_conf_cb,
+  2081						     bitmap);
+  2082			}
+  2083		} else {
+  2084			if (no_fw_peer_delete)
+  2085				wma_debug("LFR3: Delete the peer "QDF_MAC_ADDR_FMT,
+  2086					  QDF_MAC_ADDR_REF(peer_addr));
+  2087	
+  2088			if (peer_unmap_conf_support_enabled)
+  2089				cdp_peer_delete_sync(soc, vdev_id, peer_addr,
+  2090						     wma_peer_unmap_conf_cb,
+  2091						     bitmap);
+  2092			else
+  2093				cdp_peer_delete(soc, vdev_id, peer_addr, bitmap);
+  2094		}
+  2095	
+  2096		wlan_objmgr_peer_release_ref(peer, WLAN_LEGACY_WMA_ID);
+  2097		wlan_release_peer_key_wakelock(wma->pdev, peer_addr);
+  2098		wma_remove_objmgr_peer(wma, iface->vdev, peer_addr);
+  2099	
+  2100		iface->peer_count--;
+  2101		if (host_detached)
+  2102			*host_detached = true;
+  2103	
+  2104		return qdf_status;
+  2105	}
+  2106	
+  2107	QDF_STATUS wma_remove_peer(tp_wma_handle wma, uint8_t *mac_addr,
+  2108				   uint8_t vdev_id, bool no_fw_peer_delete)
+  2109	{
+  2110		return wma_remove_peer_internal(wma, mac_addr, vdev_id,
+  2111						no_fw_peer_delete, NULL);
+  2112	}
+  2113	
+  2114	/**
+  2115	 * wma_get_obj_mgr_peer_type() - Determine the type of peer(eg. STA/AP)
+  2116	 * @wma: wma handle
+  2117	 * @vdev_id: vdev id
+  2118	 * @peer_addr: peer mac address
+  2119	 * @wma_peer_type: wma peer type
+  2120	 *
+  2121	 * Return: Peer type
+  2122	 */
+  2123	static int wma_get_obj_mgr_peer_type(tp_wma_handle wma, uint8_t vdev_id,
+  2124					     uint8_t *peer_addr, uint32_t wma_peer_type)
+  2125	
+  2126	{
+  2127		uint32_t obj_peer_type = 0;
+  2128		struct wlan_objmgr_vdev *vdev;
+  2129		uint8_t *addr;
+  2130		uint8_t *mld_addr;
+  2131	
+  2132		vdev = wma->interfaces[vdev_id].vdev;
+  2133		if (!vdev) {
+  2134			wma_err("Couldn't find vdev for VDEV_%d", vdev_id);
+  2135			return obj_peer_type;
+  2136		}
+  2137		addr = wlan_vdev_mlme_get_macaddr(vdev);
+  2138		mld_addr = wlan_vdev_mlme_get_mldaddr(vdev);
+  2139	
+  2140		if (wma_peer_type == WMI_PEER_TYPE_TDLS)
+  2141			return WLAN_PEER_TDLS;
+  2142	
+  2143		if (wma_peer_type == WMI_PEER_TYPE_PASN) {
+  2144			if (wlan_vdev_mlme_get_opmode(vdev) == QDF_NAN_DISC_MODE)
+  2145				return WLAN_PEER_NAN_PASN;
+  2146			else
+  2147				return WLAN_PEER_RTT_PASN;
+  2148		}
+  2149	
+  2150		if (!qdf_mem_cmp(addr, peer_addr, QDF_MAC_ADDR_SIZE) ||
+  2151		    !qdf_mem_cmp(mld_addr, peer_addr, QDF_MAC_ADDR_SIZE)) {
+  2152			obj_peer_type = WLAN_PEER_SELF;
+  2153		} else if (wma->interfaces[vdev_id].type == WMI_VDEV_TYPE_STA) {
+  2154			if (wma->interfaces[vdev_id].sub_type ==
+  2155						WMI_UNIFIED_VDEV_SUBTYPE_P2P_CLIENT)
+  2156				obj_peer_type = WLAN_PEER_P2P_GO;
+  2157			else
+  2158				obj_peer_type = WLAN_PEER_AP;
+  2159		} else if (wma->interfaces[vdev_id].type == WMI_VDEV_TYPE_AP) {
+  2160				obj_peer_type = WLAN_PEER_STA;
+  2161		} else if (wma->interfaces[vdev_id].type == WMI_VDEV_TYPE_IBSS) {
+  2162			obj_peer_type = WLAN_PEER_IBSS;
+  2163		} else if (wma->interfaces[vdev_id].type == WMI_VDEV_TYPE_NDI) {
+  2164			obj_peer_type = WLAN_PEER_NDP;
+  2165		} else {
+  2166			wma_err("Couldn't find peertype for type %d and sub type %d",
+  2167				 wma->interfaces[vdev_id].type,
+  2168				 wma->interfaces[vdev_id].sub_type);
+  2169		}
+  2170	
+  2171		return obj_peer_type;
+  2172	
+  2173	}
+  2174	
+  2175	#ifdef WLAN_FEATURE_11BE_MLO
+  2176	static QDF_STATUS
+  2177	wma_create_peer_validate_mld_address(tp_wma_handle wma,
+  2178					     uint8_t *peer_mld_addr,
+  2179					     struct wlan_objmgr_vdev *vdev)
+  2180	{
+  2181		uint8_t peer_vdev_id, vdev_id;
+  2182		struct wlan_objmgr_vdev *dup_vdev;
+  2183		QDF_STATUS status = QDF_STATUS_SUCCESS;
+  2184		struct wlan_objmgr_psoc *psoc = wma->psoc;
+  2185	
+  2186		vdev_id = wlan_vdev_get_id(vdev);
+  2187		/* Check if the @peer_mld_addr matches any other
+  2188		 * peer's link address.
+  2189		 * We may find a match if one of the peers added
+  2190		 * has same MLD and link, in such case check if

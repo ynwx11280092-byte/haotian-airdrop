@@ -1,0 +1,20 @@
+=== FILE: qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c
+
+<<<<<<<
+	if (nbuf->protocol == QDF_NBUF_TRAC_EAPOL_ETH_TYPE)
+=======
+	if (!dp_tx_vdev_is_passthru(vdev) &&
+	    qdf_unlikely(nbuf->protocol == QDF_NBUF_TRAC_EAPOL_ETH_TYPE))
+>>>>>>>
+
+---
+<<<<<<<
+	dp_tx_desc_update_fast_comp_flag(soc, tx_desc,
+					 !pdev->enhanced_stats_en);
+=======
+	if (!dp_tx_desc_is_passthru(tx_desc)) {
+		dp_tx_desc_update_fast_flag(soc, tx_desc,
+					    !pdev->enhanced_stats_en);
+>>>>>>>
+
+---

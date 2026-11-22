@@ -1,0 +1,47 @@
+######## FILE: qcacld-3.0/core/hdd/src/wlan_hdd_main.c
+######## REJ:
+--- qcacld-3.0/core/hdd/src/wlan_hdd_main.c
++++ qcacld-3.0/core/hdd/src/wlan_hdd_main.c
+@@ -7892,24 +7957,36 @@ int hdd_vdev_destroy(struct wlan_hdd_link_info *link_info)
+ 	struct wlan_objmgr_psoc *psoc;
+ 	enum QDF_OPMODE op_mode;
+ 
++#ifdef DRIVER_PASSTHRU_OWNER
++	if (record) {
++		if (record->steps & HDD_PT_VDEV_DELETE_CALLED)
++			return -EALREADY;
++		record->steps |= HDD_PT_VDEV_DELETE_CALLED;
++		record->delete_result = -EINPROGRESS;
++	}
++#endif
+ 	vdev_id = link_info->vdev_id;
+ 	hdd_nofl_debug("destroying vdev %d", vdev_id);
+ 	/* vdev created sanity check */
+ 	if (!qdf_atomic_test_bit(SME_SESSION_OPENED, link_info->link_flags)) {
+ 		hdd_nofl_debug("vdev %u does not exist", vdev_id);
+-		return -EINVAL;
++		return hdd_vdev_delete_return(record, -EINVAL);
+ 	}
+ 
+ 	hdd_ctx = WLAN_HDD_GET_CTX(link_info->adapter);
+ 
+ 	vdev = hdd_objmgr_get_vdev_by_user(link_info, WLAN_OSIF_ID);
+ 	if (!vdev)
+-		return -EINVAL;
++		return hdd_vdev_delete_return(record, -EINVAL);
+ 
+ 	psoc = wlan_vdev_get_psoc(vdev);
+ 	if (!psoc) {
+ 		hdd_err("invalid psoc");
+-		return -EINVAL;
++#ifdef DRIVER_PASSTHRU_OWNER
++		if (record)
++			hdd_objmgr_put_vdev_by_user(vdev, WLAN_OSIF_ID);
++#endif
++		return hdd_vdev_delete_return(record, -EINVAL);
+ 	}
+ 	op_mode = wlan_vdev_mlme_get_opmode(vdev);
+ 
+
+######## CURRENT FILE CONTEXT:
+---- hunk header: 3:@@ -7892,24 +7957,36 @@ int hdd_vdev_destroy(struct wlan_hdd_link_info *link_info)

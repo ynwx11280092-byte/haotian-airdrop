@@ -1,0 +1,28 @@
+=== FILE: qcacld-3.0/core/sme/inc/sme_api.h
+
+<<<<<<<
+=======
+sme_set_reconnect_disallow_period_value(mac_handle_t mac_handle,
+					uint8_t vdev_id,
+					uint32_t reconnect_disallow_period);
+#ifdef DRIVER_PASSTHRU_SESSION
+/* One-shot callback. Called under SME lock; must not reenter SME or wait for
+ * its queue. Unregister does not cancel queued PE requests: owner must drain
+ * requests and delete sessions before destroying context. No SSR rearm.
+ */
+QDF_STATUS sme_set_passthrough_mode_cb(mac_handle_t mac_handle,
+	void (*callback)(uint8_t, enum sir_passthru_event, QDF_STATUS, uint32_t));
+QDF_STATUS sme_post_passthrough_channel_event(uint8_t vdev_id,
+	enum sir_passthru_event event, QDF_STATUS result, uint32_t cookie);
+QDF_STATUS sme_post_passthrough_event(uint8_t vdev_id,
+	enum sir_passthru_event event, QDF_STATUS result);
+QDF_STATUS sme_create_pe_session(mac_handle_t mac_handle, uint8_t *bssid,
+	uint8_t vdev_id, enum QDF_OPMODE op_mode);
+QDF_STATUS sme_delete_pe_session(mac_handle_t mac_handle, uint8_t vdev_id,
+	enum QDF_OPMODE op_mode);
+#endif
+
+
+>>>>>>>
+
+---

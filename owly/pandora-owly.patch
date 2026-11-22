@@ -1,0 +1,540 @@
+--- a/native/houji-runner/src/android.rs
++++ b/native/houji-runner/src/android.rs
+@@ -449,6 +449,7 @@
+     rx_gaps: Option<RxGaps>,
+     rx_invalid: DropCount,
+     rx_addba_resp_reported: u8,
++    data_note: std::collections::HashMap<[u8; 6], Instant>,
+ }
+ 
+ impl RxTelemetry {
+@@ -486,6 +487,24 @@
+ 
+     fn accept(&mut self, received: &radiotap::Rx<'_>) {
+         let raw = received.frame;
++        // pandora peer gate: a data frame (type 2) proves its transmitter is talking to us
++        // only frames meant for us count: unicast to our address, or a multicast _airdrop mDNS query
++        if raw.len() >= 16
++            && raw[0] & 0x0c == 0x08
++            && ((raw[4..10] == self.own.0 && carries_tcp_udp(raw))
++                || (raw[4] & 1 == 1 && raw.windows(8).any(|w| w == b"_airdrop"))) {
++            let mut ta = [0u8; 6];
++            ta.copy_from_slice(&raw[10..16]);
++            let now = Instant::now();
++            let due = self
++                .data_note
++                .get(&ta)
++                .is_none_or(|t| now.duration_since(*t) >= std::time::Duration::from_millis(500));
++            if due {
++                self.data_note.insert(ta, now);
++                crate::peer_ctl::note_peer_data(MacAddr(ta), raw[4..10] == self.own.0);
++            }
++        }
+         if let Some(rx_gaps) = &mut self.rx_gaps
+             && raw.len() >= 1536
+             && raw[0] == 0x88
+@@ -592,6 +611,7 @@
+                 rx_gaps: rx_gaps_enabled().then(RxGaps::default),
+                 rx_invalid: DropCount::default(),
+                 rx_addba_resp_reported: 0,
++                data_note: std::collections::HashMap::new(),
+             },
+             tx_fatal: DropCount::default(),
+             tx_backpressure: 0,
+@@ -1626,8 +1646,8 @@
+     };
+     if mode != 0 {
+         let capacity =
+-            fs::read_to_string("/sys/module/qca_cld3_kiwi_v2/parameters/pt_rx_capacity_4224")?;
+-        let vht = fs::read_to_string("/sys/module/qca_cld3_kiwi_v2/parameters/pt_vht80")?;
++            fs::read_to_string("/sys/module/qca_cld3_peach_v2/parameters/pt_rx_capacity_4224")?;
++        let vht = fs::read_to_string("/sys/module/qca_cld3_peach_v2/parameters/pt_vht80")?;
+         if capacity.trim() != "Y" || vht.trim() != "Y" {
+             return Err(io::Error::other(
+                 "outgoing VHT requires the tested RX capacity and VHT80 radio mode",
+@@ -1747,7 +1767,9 @@
+     };
+     let dynamic_peers = peer_sync.is_enabled();
+     if dynamic_peers {
+-        cfg.max_peers = 8;
++        // pandora: the peer gate (peer_ctl.rs) bounds driver slots; a small owly table made ~20 nearby
++        // Apple devices evict each other (and the sharing iPhone) continuously.
++        cfg.max_peers = std::env::var("OWLY_MAX_PEERS").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
+     }
+ 
+     let mut terminate = signal(SignalKind::terminate())?;
+@@ -1812,3 +1834,16 @@
+     if let Some(task) = app_task { task.abort(); }
+     result
+ }
++
++/// pandora peer gate: true if an AWDL data frame carries IPv6 TCP or UDP (AirDrop traffic), not ICMPv6
++/// (owly keepalive pings and their replies, NDP), which every neighbour answers.
++fn carries_tcp_udp(raw: &[u8]) -> bool {
++    let lim = raw.len().min(96);
++    for i in 24..lim.saturating_sub(10) {
++        if raw[i] == 0x86 && raw[i + 1] == 0xdd && raw[i + 2] >> 4 == 6 {
++            let nh = raw[i + 2 + 6];
++            return nh == 6;
++        }
++    }
++    false
++}
+--- a/native/houji-runner/src/peer_ctl.rs
++++ b/native/houji-runner/src/peer_ctl.rs
+@@ -8,8 +8,8 @@
+ use std::thread::{self, JoinHandle};
+ use std::time::{Duration, Instant};
+ 
+-const SYSFS_MULTI_FLAG: &str = "/sys/module/qca_cld3_kiwi_v2/parameters/pt_remote_multi";
+-const SYSFS_PEER_CTL: &str = "/sys/module/qca_cld3_kiwi_v2/parameters/pt_remote_peer_ctl";
++const SYSFS_MULTI_FLAG: &str = "/sys/module/qca_cld3_peach_v2/parameters/pt_remote_multi";
++const SYSFS_PEER_CTL: &str = "/sys/module/qca_cld3_peach_v2/parameters/pt_remote_peer_ctl";
+ const DEFAULT_RETRY_BACKOFF_MS: [u64; 5] = [25, 50, 100, 250, 500];
+ const DEFAULT_EXHAUSTED_COOLDOWN_MS: u64 = 5_000;
+ 
+@@ -102,6 +102,7 @@
+ pub struct KernelPeerSync {
+     bus: Option<Arc<SyncBus>>,
+     worker: Option<JoinHandle<()>>,
++    gate: Option<Arc<PeerGate>>,
+ }
+ 
+ impl KernelPeerSync {
+@@ -109,6 +110,7 @@
+         Self {
+             bus: None,
+             worker: None,
++            gate: None,
+         }
+     }
+ 
+@@ -129,9 +131,11 @@
+             return Self::disabled();
+         }
+         println!("OWLY_PT_PEER_CTL enabled=true");
+-        Self::spawn_with_sink(SysfsCtlSink {
++        let mut sync = Self::spawn_with_sink(SysfsCtlSink {
+             path: ctl_path.to_path_buf(),
+-        })
++        });
++        sync.gate = sync.bus.as_ref().and_then(PeerGate::install);
++        sync
+     }
+ 
+     fn spawn_with_sink<S: CtlSink>(sink: S) -> Self {
+@@ -174,6 +178,7 @@
+         Self {
+             bus: Some(bus),
+             worker: Some(worker),
++            gate: None,
+         }
+     }
+ 
+@@ -204,90 +209,36 @@
+     }
+ 
+     pub fn peer_caps(&self, mac: MacAddr, caps: PeerCaps) {
+-        let Some(bus) = &self.bus else {
+-            return;
+-        };
+-        let mut guard = bus.state.lock().unwrap();
+-        let Some(entry) = guard.peers.get_mut(&mac) else {
+-            return;
+-        };
+-        if !entry.desired {
+-            return;
+-        }
+-        if entry.desired_caps != Some(caps) || (entry.applied_caps != Some(caps) && entry.exhausted)
+-        {
+-            entry.desired_caps = Some(caps);
+-            entry.generation = entry.generation.wrapping_add(1);
+-            entry.retries_used = 0;
+-            entry.exhausted = false;
+-            entry.next_retry = None;
+-            entry.cooldown_until = None;
+-            bus.cv.notify_all();
++        let Some(bus) = &self.bus else { return; };
++        match &self.gate {
++            Some(g) => g.caps(mac, caps),
++            None => raw_peer_caps(bus, mac, caps),
+         }
+     }
+ 
+     fn set_peer_up(&self, mac: MacAddr, caps: Option<PeerCaps>) {
+-        let Some(bus) = &self.bus else {
+-            return;
+-        };
+-        let mut guard = bus.state.lock().unwrap();
+-        let entry = guard.peers.entry(mac).or_insert(PeerEntry {
+-            desired: false,
+-            applied: AppliedState::Absent,
+-            desired_caps: None,
+-            applied_caps: None,
+-            generation: 0,
+-            retries_used: 0,
+-            exhausted: false,
+-            next_retry: None,
+-            cooldown_until: None,
+-        });
+-        let caps_changed = entry.desired_caps != caps;
+-        let stuck = entry.exhausted && entry.has_pending_delta();
+-        if !entry.desired || caps_changed || stuck {
+-            entry.desired = true;
+-            entry.desired_caps = caps;
+-            entry.generation = entry.generation.wrapping_add(1);
+-            entry.retries_used = 0;
+-            entry.exhausted = false;
+-            entry.next_retry = None;
+-            entry.cooldown_until = None;
+-            bus.cv.notify_all();
++        let Some(bus) = &self.bus else { return; };
++        match &self.gate {
++            Some(g) => g.up(mac, caps),
++            None => raw_set_peer_up(bus, mac, caps),
+         }
+     }
+ 
+     pub fn peer_down(&self, mac: MacAddr) {
+-        let Some(bus) = &self.bus else {
+-            return;
+-        };
+-        let mut guard = bus.state.lock().unwrap();
+-        let in_flight = guard.in_flight == Some(mac);
+-        let Some(entry) = guard.peers.get_mut(&mac) else {
+-            return;
+-        };
+-        if entry.applied == AppliedState::Absent && !in_flight {
+-            guard.peers.remove(&mac);
+-            bus.cv.notify_all();
+-            return;
+-        }
+-        if entry.desired {
+-            entry.desired = false;
+-            entry.generation = entry.generation.wrapping_add(1);
+-            entry.retries_used = 0;
+-            entry.exhausted = false;
+-            entry.next_retry = None;
+-            entry.cooldown_until = None;
+-            bus.cv.notify_all();
+-        } else if entry.applied == AppliedState::Present && entry.exhausted {
+-            entry.generation = entry.generation.wrapping_add(1);
+-            entry.retries_used = 0;
+-            entry.exhausted = false;
+-            entry.next_retry = None;
+-            entry.cooldown_until = None;
+-            bus.cv.notify_all();
++        let Some(bus) = &self.bus else { return; };
++        match &self.gate {
++            Some(g) => g.down(mac),
++            None => raw_peer_down(bus, mac),
+         }
+     }
+ 
++
++
++
++
++
++
++
+     #[cfg(test)]
+     fn wait_until_idle(&self) {
+         let Some(bus) = &self.bus else {
+@@ -343,6 +294,8 @@
+ }
+ 
+ fn format_add_cmd(mac: MacAddr, caps: Option<PeerCaps>) -> String {
++    // pandora: the peach driver parses only "add <mac>"; per-peer caps are opt-in.
++    let caps = caps.filter(|_| std::env::var_os("OWLY_PEER_CAPS").is_some());
+     match caps {
+         Some(c) => format!(
+             "add {mac} ht={} vht={} nss={} bw={} mcs={} sgi={} ldpc={} ht_bw40={} ht_sgi20={} ht_sgi40={} ht_ldpc={} vht_sgi80={} vht_ldpc={} max_mpdu={} ampdu_exp={} mpdu_density={} ht_mcs={}\n",
+@@ -896,3 +849,287 @@
+         assert_eq!(log.lock().unwrap().len(), 8); // 6 failed + 1 recovered add + 1 clear
+     }
+ }
++
++fn raw_peer_caps(bus: &Arc<SyncBus>, mac: MacAddr, caps: PeerCaps) {
++        let mut guard = bus.state.lock().unwrap();
++        let Some(entry) = guard.peers.get_mut(&mac) else {
++            return;
++        };
++        if !entry.desired {
++            return;
++        }
++        if entry.desired_caps != Some(caps) || (entry.applied_caps != Some(caps) && entry.exhausted)
++        {
++            entry.desired_caps = Some(caps);
++            entry.generation = entry.generation.wrapping_add(1);
++            entry.retries_used = 0;
++            entry.exhausted = false;
++            entry.next_retry = None;
++            entry.cooldown_until = None;
++            bus.cv.notify_all();
++        }
++    }
++fn raw_set_peer_up(bus: &Arc<SyncBus>, mac: MacAddr, caps: Option<PeerCaps>) {
++        let mut guard = bus.state.lock().unwrap();
++        let entry = guard.peers.entry(mac).or_insert(PeerEntry {
++            desired: false,
++            applied: AppliedState::Absent,
++            desired_caps: None,
++            applied_caps: None,
++            generation: 0,
++            retries_used: 0,
++            exhausted: false,
++            next_retry: None,
++            cooldown_until: None,
++        });
++        let caps_changed = entry.desired_caps != caps;
++        let stuck = entry.exhausted && entry.has_pending_delta();
++        if !entry.desired || caps_changed || stuck {
++            entry.desired = true;
++            entry.desired_caps = caps;
++            entry.generation = entry.generation.wrapping_add(1);
++            entry.retries_used = 0;
++            entry.exhausted = false;
++            entry.next_retry = None;
++            entry.cooldown_until = None;
++            bus.cv.notify_all();
++        }
++    }
++fn raw_peer_down(bus: &Arc<SyncBus>, mac: MacAddr) {
++        let mut guard = bus.state.lock().unwrap();
++        let in_flight = guard.in_flight == Some(mac);
++        let Some(entry) = guard.peers.get_mut(&mac) else {
++            return;
++        };
++        if entry.applied == AppliedState::Absent && !in_flight {
++            guard.peers.remove(&mac);
++            bus.cv.notify_all();
++            return;
++        }
++        if entry.desired {
++            entry.desired = false;
++            entry.generation = entry.generation.wrapping_add(1);
++            entry.retries_used = 0;
++            entry.exhausted = false;
++            entry.next_retry = None;
++            entry.cooldown_until = None;
++            bus.cv.notify_all();
++        } else if entry.applied == AppliedState::Present && entry.exhausted {
++            entry.generation = entry.generation.wrapping_add(1);
++            entry.retries_used = 0;
++            entry.exhausted = false;
++            entry.next_retry = None;
++            entry.cooldown_until = None;
++            bus.cv.notify_all();
++        }
++    }
++
++// ---- pandora: admit only peers that talk to us ----
++//
++// owly reports every AWDL node it hears (idle Macs, watches, iPads...). The peach driver has 8 remote
++// peer slots; filling them with idle neighbours left no slot for the iPhone actually sharing (ENOSPC),
++// and add/del churn across many peers wedged the PT close path (and once crashed the firmware). The gate
++// keeps AWDL peers as candidates and adds a peer to the driver only after it sent us a data frame:
++// unicast to our address, or a multicast _airdrop mDNS query (share sheet browsing). At most
++// OWLY_PEER_MAX (default 6) peers hold slots. Peers receiving our unicast win over multicast-only ones,
++// and a unicast peer that owly drops keeps its slot for 30 s so a short owly timeout mid-transfer does
++// not stall the upload. OWLY_PEER_GATE=0 restores the original admit-everything behaviour.
++
++const GATE_ACTIVE_WINDOW: Duration = Duration::from_secs(30);
++const GATE_UNICAST_WINDOW: Duration = Duration::from_secs(30);
++const GATE_EVICT_IDLE: Duration = Duration::from_secs(15);
++const GATE_LINGER: Duration = Duration::from_secs(30);
++const GATE_READD_COOLDOWN: Duration = Duration::from_secs(5);
++const GATE_OP_SPACING: Duration = Duration::from_millis(300);
++
++static GATE: std::sync::OnceLock<Arc<PeerGate>> = std::sync::OnceLock::new();
++
++struct GateState {
++    candidates: std::collections::HashMap<MacAddr, Option<PeerCaps>>,
++    active: std::collections::HashMap<MacAddr, Instant>,
++    unicast: std::collections::HashMap<MacAddr, Instant>,
++    lingering: std::collections::HashMap<MacAddr, Instant>,
++    released: std::collections::HashMap<MacAddr, Instant>,
++    last_op: Option<Instant>,
++    admitted: Vec<MacAddr>,
++    full_logged: Option<Instant>,
++}
++
++impl GateState {
++    fn recent(map: &std::collections::HashMap<MacAddr, Instant>, mac: &MacAddr, window: Duration) -> bool {
++        map.get(mac).is_some_and(|t| t.elapsed() < window)
++    }
++}
++
++pub struct PeerGate {
++    bus: Arc<SyncBus>,
++    max: usize,
++    state: Mutex<GateState>,
++}
++
++impl PeerGate {
++    fn install(bus: &Arc<SyncBus>) -> Option<Arc<PeerGate>> {
++        if std::env::var("OWLY_PEER_GATE").is_ok_and(|v| v == "0") {
++            println!("OWLY_PEER_GATE enabled=false");
++            return None;
++        }
++        let max = std::env::var("OWLY_PEER_MAX")
++            .ok()
++            .and_then(|v| v.parse::<usize>().ok())
++            .unwrap_or(6)
++            .clamp(1, 8);
++        let gate = Arc::new(PeerGate {
++            bus: Arc::clone(bus),
++            max,
++            state: Mutex::new(GateState {
++                candidates: std::collections::HashMap::new(),
++                active: std::collections::HashMap::new(),
++                unicast: std::collections::HashMap::new(),
++                lingering: std::collections::HashMap::new(),
++                released: std::collections::HashMap::new(),
++                last_op: None,
++                admitted: Vec::new(),
++                full_logged: None,
++            }),
++        });
++        let _ = GATE.set(Arc::clone(&gate));
++        println!("OWLY_PEER_GATE enabled=true max={max} linger_s=30");
++        Some(gate)
++    }
++
++    fn release(&self, st: &mut GateState, mac: MacAddr, why: &str) {
++        st.admitted.retain(|m| *m != mac);
++        st.lingering.remove(&mac);
++        st.released.insert(mac, Instant::now());
++        st.last_op = Some(Instant::now());
++        raw_peer_down(&self.bus, mac);
++        println!("OWLY_PEER_GATE {why} {mac} admitted={}", st.admitted.len());
++    }
++
++    fn sweep(&self, st: &mut GateState) {
++        let expired: Vec<MacAddr> = st
++            .lingering
++            .iter()
++            .filter(|(_, t)| t.elapsed() >= GATE_LINGER)
++            .map(|(m, _)| *m)
++            .collect();
++        for m in expired {
++            self.release(st, m, "linger-expired");
++        }
++    }
++
++    fn up(&self, mac: MacAddr, caps: Option<PeerCaps>) {
++        let mut st = self.state.lock().unwrap();
++        self.sweep(&mut st);
++        st.candidates.insert(mac, caps);
++        if st.lingering.remove(&mac).is_some() {
++            println!("OWLY_PEER_GATE resume {mac}");
++        }
++        if st.admitted.contains(&mac) {
++            raw_set_peer_up(&self.bus, mac, caps);
++            return;
++        }
++        if GateState::recent(&st.active, &mac, GATE_ACTIVE_WINDOW) {
++            let uni = GateState::recent(&st.unicast, &mac, GATE_UNICAST_WINDOW);
++            self.try_admit(&mut st, mac, uni);
++        }
++    }
++
++    fn caps(&self, mac: MacAddr, caps: PeerCaps) {
++        let mut st = self.state.lock().unwrap();
++        if let Some(c) = st.candidates.get_mut(&mac) {
++            *c = Some(caps);
++        }
++        if st.admitted.contains(&mac) && !st.lingering.contains_key(&mac) {
++            raw_peer_caps(&self.bus, mac, caps);
++        }
++    }
++
++    fn down(&self, mac: MacAddr) {
++        let mut st = self.state.lock().unwrap();
++        st.candidates.remove(&mac);
++        if !st.admitted.contains(&mac) {
++            st.active.remove(&mac);
++            st.unicast.remove(&mac);
++            return;
++        }
++        if GateState::recent(&st.unicast, &mac, GATE_UNICAST_WINDOW) {
++            st.lingering.insert(mac, Instant::now());
++            println!("OWLY_PEER_GATE linger {mac} admitted={}", st.admitted.len());
++            return;
++        }
++        st.active.remove(&mac);
++        st.unicast.remove(&mac);
++        self.release(&mut st, mac, "drop");
++    }
++
++    fn data(&self, mac: MacAddr, unicast: bool) {
++        let mut st = self.state.lock().unwrap();
++        let now = Instant::now();
++        st.active.insert(mac, now);
++        if unicast {
++            st.unicast.insert(mac, now);
++        }
++        if st.admitted.contains(&mac) || !st.candidates.contains_key(&mac) {
++            return;
++        }
++        self.sweep(&mut st);
++        self.try_admit(&mut st, mac, unicast);
++    }
++
++    fn try_admit(&self, st: &mut GateState, mac: MacAddr, unicast: bool) {
++        st.released.retain(|_, t| t.elapsed() < GATE_READD_COOLDOWN);
++        if st.released.contains_key(&mac) {
++            return; // its previous driver peer may still be tearing down
++        }
++        if st.last_op.is_some_and(|t| t.elapsed() < GATE_OP_SPACING) {
++            return; // retried on the next data frame (throttled to 500 ms per MAC)
++        }
++        if st.admitted.len() >= self.max {
++            let now = Instant::now();
++            // victim order: lingering first, then multicast-only, then by longest idle
++            let victim = st
++                .admitted
++                .iter()
++                .copied()
++                .map(|m| {
++                    let idle = st.active.get(&m).map_or(Duration::MAX, |t| now.duration_since(*t));
++                    let uni = GateState::recent(&st.unicast, &m, GATE_UNICAST_WINDOW);
++                    let ling = st.lingering.contains_key(&m);
++                    (ling, !uni, idle, m)
++                })
++                .max_by_key(|(ling, multi_only, idle, _)| (*ling, *multi_only, *idle));
++            let evictable = match victim {
++                Some((true, _, idle, _)) => idle >= Duration::from_secs(5),
++                Some((false, true, idle, _)) => unicast || idle >= GATE_EVICT_IDLE,
++                Some((false, false, idle, _)) => idle >= GATE_EVICT_IDLE,
++                None => false,
++            };
++            match victim {
++                Some((_, _, idle, v)) if evictable => {
++                    let _ = idle;
++                    self.release(st, v, "evict");
++                }
++                _ => {
++                    if st.full_logged.is_none_or(|t| t.elapsed() > Duration::from_secs(5)) {
++                        st.full_logged = Some(now);
++                        println!("OWLY_PEER_GATE full skip={mac} unicast={unicast} admitted={}", st.admitted.len());
++                    }
++                    return;
++                }
++            }
++        }
++        let caps = st.candidates.get(&mac).copied().flatten();
++        st.admitted.push(mac);
++        st.last_op = Some(Instant::now());
++        raw_set_peer_up(&self.bus, mac, caps);
++        println!("OWLY_PEER_GATE admit {mac} unicast={unicast} admitted={}", st.admitted.len());
++    }
++}
++
++/// Called from the air RX path (throttled per MAC by the caller) for data frames meant for us.
++pub fn note_peer_data(mac: MacAddr, unicast: bool) {
++    if let Some(g) = GATE.get() {
++        g.data(mac, unicast);
++    }
++}

@@ -1,0 +1,316 @@
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c b/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+index efc4d5f..83eaa41 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+@@ -12983,6 +12983,7 @@ dp_vdev_update_lmacid(struct cdp_soc_t *soc_hdl,
+ 
+ 	dp_info("update mac id %d for vdev id %d", lmac_id, vdev_id);
+ 
++	pr_info("PT_LMAC dp vdev %u lmac %u -> %u\n", vdev_id, vdev->lmac_id, lmac_id);
+ 	vdev->lmac_id = lmac_id;
+ 	if (wlan_op_mode_monitor == vdev->opmode)
+ 		dp_monitor_update_mac_vdev_map(vdev);
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/dp_pt_rate_observer.h b/qca-wifi-host-cmn/dp/wifi3.0/dp_pt_rate_observer.h
+index b934393..99c77dd 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_pt_rate_observer.h
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_pt_rate_observer.h
+@@ -9,6 +9,9 @@
+ #endif
+ static bool pt_single_ring;
+ module_param(pt_single_ring, bool, 0444);
++/* -1: keep per-frame TID; 0..7: force every PASSTHRU TX frame onto this TID. */
++static int pt_force_tid = -1;
++module_param(pt_force_tid, int, 0400);
+ static bool pt_rate_observe;
+ module_param(pt_rate_observe, bool, 0444);
+ struct pt_rate_counts {
+diff --git a/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c b/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c
+index 5a11df2..01d2d1f 100644
+--- a/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c
++++ b/qca-wifi-host-cmn/dp/wifi3.0/dp_tx.c
+@@ -3777,6 +3777,8 @@ dp_tx_passthru_validate_frame(const uint8_t *frame, uint32_t len,
+ 		*tid = 6;
+ 	else
+ 		*tid = meta->tid;
++	if (pt_force_tid >= 0 && pt_force_tid < 8)
++		*tid = pt_force_tid;
+ 	return true;
+ }
+ 
+diff --git a/qca-wifi-host-cmn/wmi/src/wmi_unified.c b/qca-wifi-host-cmn/wmi/src/wmi_unified.c
+index 042e03f..603555b 100644
+--- a/qca-wifi-host-cmn/wmi/src/wmi_unified.c
++++ b/qca-wifi-host-cmn/wmi/src/wmi_unified.c
+@@ -2153,7 +2153,8 @@ QDF_STATUS wmi_unified_cmd_send_fl(wmi_unified_t wmi_handle, wmi_buf_t buf,
+ 
+ #ifndef WMI_NON_TLV_SUPPORT
+ 	/* Do sanity check on the TLV parameter structure */
+-	if (wmi_handle->target_type == WMI_TLV_TARGET) {
++	/* pandora: passthru ch hop sched (0x5042) is not in this fw-api TLV table */
++	if (wmi_handle->target_type == WMI_TLV_TARGET && cmd_id != 0x5042) {
+ 		void *buf_ptr = (void *)qdf_nbuf_data(buf);
+ 
+ 		if (wmi_handle->ops->wmi_check_command_params(NULL, buf_ptr, len, cmd_id)
+diff --git a/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c b/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c
+index ab6ce70..7e9801a 100644
+--- a/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c
++++ b/qcacld-3.0/core/hdd/src/wlan_hdd_passthru_control.c
+@@ -19,6 +19,8 @@
+ #include "sme_api.h"
+ #include "wma.h"
+ #include "wma_api.h"
++#include "wlan_mlme_main.h"
++#include "wlan_fwol_ucfg_api.h"
+ #include <linux/kernel.h>
+ #include <linux/moduleparam.h>
+ #include <qdf_pt_remote_peer.h>
+@@ -52,6 +54,22 @@ MODULE_PARM_DESC(pt_tx_ampdu, "Allow outbound TX A-MPDU aggregation up to 64 MPD
+ 
+ static bool pt_dynamic_rate;
+ module_param(pt_dynamic_rate, bool, 0400);
++
++/* Exclusive mode skips policy_mgr_incr_active_session, which is the only caller of
++ * cdp_update_mac_id: DP keeps the default pdev lmac while firmware may have started the
++ * vdev on another MAC (peach HBS: 5 GHz high on MAC1). TCL data then targets the wrong MAC.
++ */
++static bool pt_sync_lmac = true;
++module_param(pt_sync_lmac, bool, 0400);
++MODULE_PARM_DESC(pt_sync_lmac, "Sync DP vdev lmac_id with firmware vdev start mac_id");
++static int pt_fw_mac_id = -1;
++module_param(pt_fw_mac_id, int, 0444);
++/* Samsung wondertap start and stock local-packet-capture both disable ILP and IMPS
++ * before transmitting from a non-STA vdev; houji never did.
++ */
++static bool pt_lowpower_off = true;
++module_param(pt_lowpower_off, bool, 0400);
++static int pt_cur_vdev = -1;
+ MODULE_PARM_DESC(pt_dynamic_rate, "Skip fixed_rate override so firmware rate control uses peer_assoc caps");
+ 
+ static u8 pt_remote_mac[QDF_MAC_ADDR_SIZE];
+@@ -347,6 +365,7 @@ int hdd_pt_control_check_start(struct hdd_pt_iface *iface, u32 cookie)
+ /* Serialized runtime control only; no waits or firmware commands. */
+ void hdd_pt_control_abort(struct hdd_pt_iface *iface)
+ {
++	pt_cur_vdev = -1;
+ 	struct wlan_objmgr_vdev *vdev;
+ 	struct vdev_mlme_obj *mlme;
+ 
+@@ -455,6 +474,184 @@ static int hdd_pt_control_tx_aggr(tp_wma_handle wma, u8 vdev_id,
+ 	return 0;
+ }
+ 
++/* ---- pandora: PASSTHRU TSF query + WMI vdev channel-hop schedule (0x5042) ----
++ * Reverse engineered from the Samsung S26U peach driver (official Qualcomm wondertap):
++ *   wlan_hdd_wondertap_set_chan_sched -> wma_send_vdev_ch_hop_sched ->
++ *   send_vdev_ch_hop_sched_cmd_tlv (cmd 0x5042):
++ *     fixed TLV tag 0x570 len 0x10: vdev_id, next_chan_idx, dwell_time_ms, target_switch_tsf(lo32)
++ *     ARRAY_UINT32 (empty), ARRAY_STRUC of n x {tag 0x575 len 0xc: freq_mhz, wmi_chan_width, flag}
++ *   wma_passthru_get_tsf_timer: WMI_OCB_GET_TSF_TIMER_CMDID + RESP event.
++ * Runtime only: /sys/module/qca_cld3_peach_v2/parameters/pt_tsf (read) and pt_ch_hop (write).
++ */
++#define PT_CH_HOP_CMDID		0x5042
++#define PT_CH_HOP_TAG_FIXED	0x570
++#define PT_CH_HOP_TAG_ENTRY	0x575
++#define PT_CH_HOP_MAX		8
++
++static bool pt_tsf_registered;
++static DECLARE_COMPLETION(pt_tsf_done);
++static u64 pt_tsf_value;
++static u32 pt_tsf_vdev;
++static DEFINE_MUTEX(pt_chhop_lock);
++
++static int pt_tsf_resp_handler(ol_scn_t scn, uint8_t *data, uint32_t len)
++{
++	WMI_OCB_GET_TSF_TIMER_RESP_EVENTID_param_tlvs *p = (void *)data;
++	wmi_ocb_get_tsf_timer_resp_event_fixed_param *f;
++
++	if (!p || !p->fixed_param)
++		return -EINVAL;
++	f = p->fixed_param;
++	pt_tsf_vdev = f->vdev_id;
++	pt_tsf_value = ((u64)f->tsf_timer_high << 32) | f->tsf_timer_low;
++	complete(&pt_tsf_done);
++	return 0;
++}
++
++static int pt_query_tsf(tp_wma_handle wma, u8 vdev_id, u64 *tsf)
++{
++	wmi_ocb_get_tsf_timer_cmd_fixed_param *cmd;
++	wmi_buf_t buf;
++	QDF_STATUS st;
++
++	if (!pt_tsf_registered) {
++		st = wmi_unified_register_event_handler(wma->wmi_handle,
++				wmi_ocb_get_tsf_timer_resp_event_id,
++				pt_tsf_resp_handler, WMA_RX_WORK_CTX);
++		if (QDF_IS_STATUS_ERROR(st))
++			return -EIO;
++		pt_tsf_registered = true;
++	}
++	buf = wmi_buf_alloc(wma->wmi_handle, sizeof(*cmd));
++	if (!buf)
++		return -ENOMEM;
++	cmd = (void *)wmi_buf_data(buf);
++	qdf_mem_zero(cmd, sizeof(*cmd));
++	WMITLV_SET_HDR(&cmd->tlv_header,
++		       WMITLV_TAG_STRUC_wmi_ocb_get_tsf_timer_cmd_fixed_param,
++		       WMITLV_GET_STRUCT_TLVLEN(wmi_ocb_get_tsf_timer_cmd_fixed_param));
++	cmd->vdev_id = vdev_id;
++	reinit_completion(&pt_tsf_done);
++	if (wmi_unified_cmd_send(wma->wmi_handle, buf, sizeof(*cmd),
++				 WMI_OCB_GET_TSF_TIMER_CMDID)) {
++		wmi_buf_free(buf);
++		return -EIO;
++	}
++	if (!wait_for_completion_timeout(&pt_tsf_done, msecs_to_jiffies(500)))
++		return -ETIMEDOUT;
++	*tsf = pt_tsf_value;
++	return 0;
++}
++
++static int pt_tsf_get(char *out, const struct kernel_param *kp)
++{
++	tp_wma_handle wma = cds_get_context(QDF_MODULE_ID_WMA);
++	u64 tsf = 0;
++	int ret;
++
++	if (!wma || !wma->wmi_handle || pt_cur_vdev < 0)
++		return scnprintf(out, PAGE_SIZE, "inactive\n");
++	mutex_lock(&pt_chhop_lock);
++	ret = pt_query_tsf(wma, pt_cur_vdev, &tsf);
++	mutex_unlock(&pt_chhop_lock);
++	if (ret)
++		return scnprintf(out, PAGE_SIZE, "error=%d\n", ret);
++	return scnprintf(out, PAGE_SIZE, "vdev=%u resp_vdev=%u tsf=%llu tsf_hex=0x%llx\n",
++			 pt_cur_vdev, pt_tsf_vdev, tsf, tsf);
++}
++static const struct kernel_param_ops pt_tsf_ops = { .get = pt_tsf_get };
++module_param_cb(pt_tsf, &pt_tsf_ops, NULL, 0400);
++
++static char pt_ch_hop_last[160];
++
++/* "<dwell_ms> <next_idx> <offset_us|=abs_tsf32> <freq>:<wmi_width>:<flag>[,...]"
++ * offset_us: target_switch_time = query_tsf + offset (0 -> sent as 0).
++ */
++static int pt_ch_hop_set(const char *val, const struct kernel_param *kp)
++{
++	tp_wma_handle wma = cds_get_context(QDF_MODULE_ID_WMA);
++	u32 dwell, next, freq[PT_CH_HOP_MAX], width[PT_CH_HOP_MAX], flag[PT_CH_HOP_MAX];
++	char tbuf[24], list[120], *p, *tok;
++	u32 switch_tsf = 0, n = 0, i, len, *w;
++	u64 tsf = 0, off = 0;
++	bool absolute = false;
++	wmi_buf_t buf;
++	int ret;
++
++	if (!wma || !wma->wmi_handle || pt_cur_vdev < 0)
++		return -ENODEV;
++	if (sscanf(val, "%u %u %23s %119s", &dwell, &next, tbuf, list) != 4)
++		return -EINVAL;
++	if (tbuf[0] == '=') {
++		absolute = true;
++		if (kstrtou64(tbuf + 1, 0, &off))
++			return -EINVAL;
++	} else if (kstrtou64(tbuf, 0, &off)) {
++		return -EINVAL;
++	}
++	p = list;
++	while ((tok = strsep(&p, ",")) && n < PT_CH_HOP_MAX) {
++		if (sscanf(tok, "%u:%u:%u", &freq[n], &width[n], &flag[n]) != 3)
++			return -EINVAL;
++		n++;
++	}
++	if (!n || next >= n)
++		return -EINVAL;
++
++	mutex_lock(&pt_chhop_lock);
++	if (absolute) {
++		switch_tsf = (u32)off;
++	} else if (off) {
++		ret = pt_query_tsf(wma, pt_cur_vdev, &tsf);
++		if (ret)
++			goto out;
++		switch_tsf = (u32)(tsf + off);
++	}
++	len = 0x1c + n * 16;
++	buf = wmi_buf_alloc(wma->wmi_handle, len);
++	if (!buf) {
++		ret = -ENOMEM;
++		goto out;
++	}
++	w = (u32 *)wmi_buf_data(buf);
++	qdf_mem_zero(w, len);
++	w[0] = (PT_CH_HOP_TAG_FIXED << 16) | 0x10;
++	w[1] = pt_cur_vdev;
++	w[2] = next;
++	w[3] = dwell;
++	w[4] = switch_tsf;
++	w[5] = WMITLV_TAG_ARRAY_UINT32 << 16;
++	w[6] = (WMITLV_TAG_ARRAY_STRUC << 16) | (n << 4);
++	for (i = 0; i < n; i++) {
++		w[7 + i * 4] = (PT_CH_HOP_TAG_ENTRY << 16) | 0xc;
++		w[8 + i * 4] = freq[i];
++		w[9 + i * 4] = width[i];
++		w[10 + i * 4] = flag[i];
++	}
++	ret = qdf_status_to_os_return(wmi_unified_cmd_send(wma->wmi_handle, buf,
++							   len, PT_CH_HOP_CMDID));
++	if (ret)
++		wmi_buf_free(buf);
++	scnprintf(pt_ch_hop_last, sizeof(pt_ch_hop_last),
++		  "vdev=%d n=%u next=%u dwell=%u tsf=%llu switch=%u ret=%d",
++		  pt_cur_vdev, n, next, dwell, tsf, switch_tsf, ret);
++	pr_info("PT_CH_HOP %s\n", pt_ch_hop_last);
++out:
++	mutex_unlock(&pt_chhop_lock);
++	return ret;
++}
++
++static int pt_ch_hop_get(char *out, const struct kernel_param *kp)
++{
++	return scnprintf(out, PAGE_SIZE, "%s\n", pt_ch_hop_last);
++}
++static const struct kernel_param_ops pt_ch_hop_ops = {
++	.set = pt_ch_hop_set,
++	.get = pt_ch_hop_get,
++};
++module_param_cb(pt_ch_hop, &pt_ch_hop_ops, NULL, 0600);
++/* ---- end pandora ch hop ---- */
++
+ int hdd_pt_control_finish_start(struct hdd_pt_iface *iface,
+ 			       const struct wondertap_init_params *params)
+ {
+@@ -529,6 +726,19 @@ int hdd_pt_control_finish_start(struct hdd_pt_iface *iface,
+ 	peer.is_qos_enabled = 1;
+ 	peer.bw = hdd_convert_ch_width_to_cdp_peer_bw(hdd_pt_vht80(params) ?
+         CH_WIDTH_80MHZ : CH_WIDTH_20MHZ);
++	if (pt_lowpower_off) {
++		QDF_STATUS ilp = ucfg_fwol_set_ilp_config(iface->hdd->psoc,
++							 iface->hdd->pdev, 0);
++		int imps = wma_enable_disable_imps(
++				iface->hdd->pdev->pdev_objmgr.wlan_pdev_id, 0);
++
++		pr_info("PT_LOWPOWER ilp_off=%d imps_off=%d\n", ilp, imps);
++	}
++	pt_fw_mac_id = wlan_mlme_get_vdev_mac_id(iface->hdd->pdev, vdev_id);
++	pr_info("PT_LMAC vdev %u fw_mac %d sync %d\n", vdev_id, pt_fw_mac_id,
++		pt_sync_lmac);
++	if (pt_sync_lmac && pt_fw_mac_id >= 0 && pt_fw_mac_id < MAX_MAC)
++		cdp_update_mac_id(soc, vdev_id, pt_fw_mac_id);
+ 	status = cdp_peer_register(soc, OL_TXRX_PDEV_ID, &peer);
+ 	if (QDF_IS_STATUS_ERROR(status))
+ 		return qdf_status_to_os_return(status);
+@@ -565,11 +775,13 @@ int hdd_pt_control_finish_start(struct hdd_pt_iface *iface,
+ 		if (ret)
+ 			return ret;
+ 	}
++	pt_cur_vdev = vdev_id;
+ 	return 0;
+ }
+ 
+ void hdd_pt_coexist_release(struct hdd_pt_iface *iface)
+ {
++	pt_cur_vdev = -1;
+ 	struct hdd_adapter *sta;
+ 	struct wlan_hdd_link_info *link;
+ 

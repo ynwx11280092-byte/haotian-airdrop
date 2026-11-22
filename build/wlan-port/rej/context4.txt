@@ -1,0 +1,409 @@
+########## dp_tx_hw_enqueue_be body (1669-1900):
+  1669	dp_tx_hw_enqueue_be(struct dp_soc *soc, struct dp_vdev *vdev,
+  1670			    struct dp_tx_desc_s *tx_desc, uint16_t fw_metadata,
+  1671			    struct cdp_tx_exception_metadata *tx_exc_metadata,
+  1672			    struct dp_tx_msdu_info_s *msdu_info)
+  1673	{
+  1674		void *hal_tx_desc;
+  1675		uint32_t *hal_tx_desc_cached;
+  1676		int coalesce = 0;
+  1677		struct dp_tx_queue *tx_q = &msdu_info->tx_queue;
+  1678		uint8_t ring_id = tx_q->ring_id;
+  1679		uint8_t tid;
+  1680		struct dp_vdev_be *be_vdev;
+  1681		uint8_t cached_desc[HAL_TX_DESC_LEN_BYTES] = { 0 };
+  1682		uint8_t bm_id = dp_tx_get_rbm_id_be(soc, ring_id);
+  1683		hal_ring_handle_t hal_ring_hdl = NULL;
+  1684		QDF_STATUS status = QDF_STATUS_E_RESOURCES;
+  1685		uint8_t num_desc_bytes = HAL_TX_DESC_LEN_BYTES;
+  1686		uint16_t ast_idx = vdev->bss_ast_idx;
+  1687		uint16_t ast_hash = vdev->bss_ast_hash;
+  1688		uint32_t hp;
+  1689	
+  1690		be_vdev = dp_get_be_vdev_from_dp_vdev(vdev);
+  1691	
+  1692		if (!dp_tx_is_desc_id_valid(soc, tx_desc->id)) {
+  1693			dp_err_rl("Invalid tx desc id:%d", tx_desc->id);
+  1694			return QDF_STATUS_E_RESOURCES;
+  1695		}
+  1696	
+  1697		if (qdf_unlikely(tx_exc_metadata)) {
+  1698			if (dp_assert_always_internal_stat(
+  1699				(tx_exc_metadata->tx_encap_type ==
+  1700					CDP_INVALID_TX_ENCAP_TYPE) ||
+  1701					(tx_exc_metadata->tx_encap_type ==
+  1702						vdev->tx_encap_type), soc,
+  1703							tx.invld_encap_type))
+  1704				return QDF_STATUS_E_INVAL;
+  1705	
+  1706			if (tx_exc_metadata->tx_encap_type == htt_cmn_pkt_type_raw)
+  1707				if (dp_assert_always_internal_stat(
+  1708					((tx_exc_metadata->sec_type ==
+  1709						CDP_INVALID_SEC_TYPE) ||
+  1710						tx_exc_metadata->sec_type ==
+  1711							vdev->sec_type), soc,
+  1712								tx.invld_sec_type))
+  1713				return QDF_STATUS_E_INVAL;
+  1714	
+  1715			dp_get_peer_from_tx_exc_meta(soc, (void *)cached_desc,
+  1716						     tx_exc_metadata,
+  1717						     &ast_idx, &ast_hash);
+  1718		}
+  1719	
+  1720		hal_tx_desc_cached = (void *)cached_desc;
+  1721	
+  1722		if (dp_sawf_tag_valid_get(tx_desc->nbuf)) {
+  1723			dp_sawf_config_be(soc, hal_tx_desc_cached,
+  1724					  &fw_metadata, tx_desc, msdu_info);
+  1725		}
+  1726	
+  1727		hal_tx_desc_set_buf_addr_be(soc->hal_soc, hal_tx_desc_cached,
+  1728					    tx_desc->dma_addr, bm_id, tx_desc->id,
+  1729					    (tx_desc->flags & DP_TX_DESC_FLAG_FRAG));
+  1730		hal_tx_desc_set_lmac_id_be(soc->hal_soc, hal_tx_desc_cached,
+  1731					   vdev->lmac_id);
+  1732	
+  1733		hal_tx_desc_set_search_index_be(soc->hal_soc, hal_tx_desc_cached,
+  1734						ast_idx);
+  1735		/*
+  1736		 * Bank_ID is used as DSCP_TABLE number in beryllium
+  1737		 * So there is no explicit field used for DSCP_TID_TABLE_NUM.
+  1738		 */
+  1739	
+  1740		hal_tx_desc_set_cache_set_num(soc->hal_soc, hal_tx_desc_cached,
+  1741					      (ast_hash & 0xF));
+  1742	
+  1743		hal_tx_desc_set_fw_metadata(hal_tx_desc_cached, fw_metadata);
+  1744		hal_tx_desc_set_buf_length(hal_tx_desc_cached, tx_desc->length);
+  1745		hal_tx_desc_set_buf_offset(hal_tx_desc_cached, tx_desc->pkt_offset);
+  1746	
+  1747		if (tx_desc->flags & DP_TX_DESC_FLAG_TO_FW)
+  1748			hal_tx_desc_set_to_fw(hal_tx_desc_cached, 1);
+  1749	
+  1750		/* verify checksum offload configuration*/
+  1751		if ((qdf_nbuf_get_tx_cksum(tx_desc->nbuf) ==
+  1752					   QDF_NBUF_TX_CKSUM_TCP_UDP) ||
+  1753		      qdf_nbuf_is_tso(tx_desc->nbuf)) {
+  1754			hal_tx_desc_set_l3_checksum_en(hal_tx_desc_cached, 1);
+  1755			hal_tx_desc_set_l4_checksum_en(hal_tx_desc_cached, 1);
+  1756		}
+  1757	
+  1758		hal_tx_desc_set_bank_id(hal_tx_desc_cached, vdev->bank_id);
+  1759	
+  1760		dp_tx_vdev_id_set_hal_tx_desc(hal_tx_desc_cached, vdev, msdu_info);
+  1761	
+  1762		tid = msdu_info->tid;
+  1763		if (tid != HTT_TX_EXT_TID_INVALID)
+  1764			hal_tx_desc_set_hlos_tid(hal_tx_desc_cached, tid);
+  1765	
+  1766		dp_tx_set_min_rates_for_critical_frames(soc, hal_tx_desc_cached,
+  1767							tx_desc->nbuf);
+  1768		dp_tx_set_particular_tx_queue(soc, hal_tx_desc_cached,
+  1769					      tx_desc->nbuf);
+  1770		dp_tx_desc_set_ktimestamp(vdev, tx_desc);
+  1771	
+  1772		hal_ring_hdl = dp_tx_get_hal_ring_hdl(soc, ring_id);
+  1773	
+  1774		if (qdf_unlikely(dp_tx_hal_ring_access_start(soc, hal_ring_hdl))) {
+  1775			dp_err("HAL RING Access Failed -- %pK", hal_ring_hdl);
+  1776			DP_STATS_INC(soc, tx.tcl_ring_full[ring_id], 1);
+  1777			DP_STATS_INC(vdev,
+  1778				     tx_i[msdu_info->xmit_type].dropped.enqueue_fail,
+  1779				     1);
+  1780			dp_sawf_tx_enqueue_fail_peer_stats(soc, tx_desc);
+  1781			return status;
+  1782		}
+  1783	
+  1784		hal_tx_desc = hal_srng_src_get_next(soc->hal_soc, hal_ring_hdl);
+  1785		if (qdf_unlikely(!hal_tx_desc)) {
+  1786			dp_verbose_debug("TCL ring full ring_id:%d", ring_id);
+  1787			DP_STATS_INC(soc, tx.tcl_ring_full[ring_id], 1);
+  1788			DP_STATS_INC(vdev,
+  1789				     tx_i[msdu_info->xmit_type].dropped.enqueue_fail,
+  1790				     1);
+  1791			dp_sawf_tx_enqueue_fail_peer_stats(soc, tx_desc);
+  1792			goto ring_access_fail;
+  1793		}
+  1794	
+  1795		tx_desc->flags |= DP_TX_DESC_FLAG_QUEUED_TX;
+  1796		dp_vdev_peer_stats_update_protocol_cnt_tx(vdev, tx_desc->nbuf);
+  1797	
+  1798		/* Sync cached descriptor with HW */
+  1799		hal_tx_desc_sync(hal_tx_desc_cached, hal_tx_desc, num_desc_bytes);
+  1800	
+  1801		dp_tx_update_proto_stats(vdev, tx_desc->nbuf, ring_id,
+  1802					 TX_ENQUEUE_HW);
+  1803	
+  1804		coalesce = dp_tx_attempt_coalescing(soc, vdev, tx_desc, tid,
+  1805						    msdu_info, ring_id);
+  1806	
+  1807		if (qdf_unlikely(dp_tx_pkt_tracepoints_enabled())) {
+  1808			hp = hal_srng_src_get_hp(hal_ring_hdl);
+  1809			qdf_trace_dp_tx_enqueue(tx_desc->nbuf, hp, ring_id, coalesce);
+  1810		}
+  1811	
+  1812		DP_STATS_INC_PKT(vdev, tx_i[msdu_info->xmit_type].processed, 1,
+  1813				 dp_tx_get_pkt_len(tx_desc));
+  1814		DP_STATS_INC(soc, tx.tcl_enq[ring_id], 1);
+  1815		dp_tx_update_stats(soc, tx_desc, ring_id);
+  1816		status = QDF_STATUS_SUCCESS;
+  1817	
+  1818		dp_tx_hw_desc_update_evt((uint8_t *)hal_tx_desc_cached,
+  1819					 hal_ring_hdl, soc, ring_id);
+  1820	
+  1821	ring_access_fail:
+  1822		dp_tx_ring_access_end_wrapper(soc, hal_ring_hdl, coalesce);
+  1823		dp_pkt_add_timestamp(vdev, QDF_PKT_TX_DRIVER_EXIT,
+  1824				     qdf_get_log_timestamp(), tx_desc->nbuf);
+  1825		return status;
+  1826	}
+  1827	
+  1828	#ifdef IPA_OFFLOAD
+  1829	static void
+  1830	dp_tx_get_ipa_bank_config(struct dp_soc_be *be_soc,
+  1831				  union hal_tx_bank_config *bank_config)
+  1832	{
+  1833		bank_config->epd = 0;
+  1834		bank_config->encap_type = wlan_cfg_pkt_type(be_soc->soc.wlan_cfg_ctx);
+  1835		bank_config->encrypt_type = 0;
+  1836	
+  1837		bank_config->src_buffer_swap = 0;
+  1838		bank_config->link_meta_swap = 0;
+  1839	
+  1840		bank_config->index_lookup_enable = 0;
+  1841		bank_config->mcast_pkt_ctrl = HAL_TX_MCAST_CTRL_FW_EXCEPTION;
+  1842		bank_config->addrx_en = 1;
+  1843		bank_config->addry_en = 1;
+  1844	
+  1845		bank_config->mesh_enable = 0;
+  1846		bank_config->dscp_tid_map_id = 0;
+  1847		bank_config->vdev_id_check_en = 0;
+  1848		bank_config->pmac_id = 0;
+  1849	}
+  1850	
+  1851	static void dp_tx_init_ipa_bank_profile(struct dp_soc_be *be_soc)
+  1852	{
+  1853		union hal_tx_bank_config ipa_config = {0};
+  1854		int bid;
+  1855	
+  1856		if (!wlan_cfg_is_ipa_enabled(be_soc->soc.wlan_cfg_ctx)) {
+  1857			be_soc->ipa_bank_id = DP_BE_INVALID_BANK_ID;
+  1858			return;
+  1859		}
+  1860	
+  1861		dp_tx_get_ipa_bank_config(be_soc, &ipa_config);
+  1862	
+  1863		/* Let IPA use last HOST owned bank */
+  1864		bid = be_soc->num_bank_profiles - 1;
+  1865	
+  1866		be_soc->bank_profiles[bid].is_configured = true;
+  1867		be_soc->bank_profiles[bid].bank_config.val = ipa_config.val;
+  1868		hal_tx_populate_bank_register(be_soc->soc.hal_soc,
+  1869					      &be_soc->bank_profiles[bid].bank_config,
+  1870					      bid);
+  1871		qdf_atomic_inc(&be_soc->bank_profiles[bid].ref_count);
+  1872	
+  1873		dp_info("IPA bank at slot %d config:0x%x", bid,
+  1874			be_soc->bank_profiles[bid].bank_config.val);
+  1875	
+  1876		be_soc->ipa_bank_id = bid;
+  1877	}
+  1878	#else /* !IPA_OFFLOAD */
+  1879	static inline void dp_tx_init_ipa_bank_profile(struct dp_soc_be *be_soc)
+  1880	{
+  1881	}
+  1882	#endif /* IPA_OFFLOAD */
+  1883	
+  1884	QDF_STATUS dp_tx_init_bank_profiles(struct dp_soc_be *be_soc)
+  1885	{
+  1886		int i, num_tcl_banks;
+  1887	
+  1888		num_tcl_banks = hal_tx_get_num_tcl_banks(be_soc->soc.hal_soc);
+  1889	
+  1890		dp_assert_always_internal(num_tcl_banks);
+  1891		be_soc->num_bank_profiles = num_tcl_banks;
+  1892	
+  1893		be_soc->bank_profiles = qdf_mem_malloc(num_tcl_banks *
+  1894						       sizeof(*be_soc->bank_profiles));
+  1895		if (!be_soc->bank_profiles) {
+  1896			dp_err("unable to allocate memory for DP TX Profiles!");
+  1897			return QDF_STATUS_E_NOMEM;
+  1898		}
+  1899	
+  1900		DP_TX_BANK_LOCK_CREATE(&be_soc->tx_bank_lock);
+
+########## dp_tx.c EAPOL alloc (1455-1495):
+  1455	 *
+  1456	 * Allocate and prepare Tx descriptor with msdu and fragment descritor
+  1457	 * information. For frames with fragments, allocate and prepare
+  1458	 * an MSDU extension descriptor
+  1459	 *
+  1460	 * Return: Pointer to Tx Descriptor on success,
+  1461	 *         NULL on failure
+  1462	 */
+  1463	static struct dp_tx_desc_s *dp_tx_prepare_desc(struct dp_vdev *vdev,
+  1464			qdf_nbuf_t nbuf, struct dp_tx_msdu_info_s *msdu_info,
+  1465			uint8_t desc_pool_id)
+  1466	{
+  1467		struct dp_tx_desc_s *tx_desc;
+  1468		struct dp_tx_ext_desc_elem_s *msdu_ext_desc;
+  1469		struct dp_pdev *pdev = vdev->pdev;
+  1470		struct dp_soc *soc = pdev->soc;
+  1471	
+  1472		if (dp_tx_limit_check(vdev, nbuf))
+  1473			return NULL;
+  1474	
+  1475		/* Allocate software Tx descriptor */
+  1476		if (nbuf->protocol == QDF_NBUF_TRAC_EAPOL_ETH_TYPE)
+  1477			tx_desc = dp_tx_spcl_desc_alloc(soc, desc_pool_id);
+  1478		else
+  1479			tx_desc = dp_tx_desc_alloc(soc, desc_pool_id);
+  1480	
+  1481		if (!tx_desc) {
+  1482			DP_STATS_INC(vdev,
+  1483				     tx_i[msdu_info->xmit_type].dropped.desc_na.num, 1);
+  1484			return NULL;
+  1485		}
+  1486		dp_tx_tso_seg_history_add(soc, msdu_info->u.tso_info.curr_seg,
+  1487					  nbuf, tx_desc->id, DP_TX_DESC_COOKIE);
+  1488	
+  1489		dp_tx_outstanding_inc(pdev);
+  1490	
+  1491		/* Initialize the SW tx descriptor */
+  1492		tx_desc->nbuf = nbuf;
+  1493		tx_desc->frm_type = msdu_info->frm_type;
+  1494		tx_desc->tx_encap_type = vdev->tx_encap_type;
+  1495		tx_desc->vdev_id = vdev->vdev_id;
+
+########## dp_tx.c 3280-3310:
+  3280			DP_TX_TCL_METADATA_HOST_INSPECTED_SET(htt_tcl_metadata, 1);
+  3281		} else if (qdf_unlikely(peer_id != HTT_INVALID_PEER)) {
+  3282			DP_TX_TCL_METADATA_TYPE_SET(htt_tcl_metadata,
+  3283						    DP_TCL_METADATA_TYPE_PEER_BASED);
+  3284			DP_TX_TCL_METADATA_PEER_ID_SET(htt_tcl_metadata,
+  3285						       peer_id);
+  3286			dp_tx_bypass_reinjection(soc, tx_desc, tx_exc_metadata);
+  3287		} else
+  3288			htt_tcl_metadata = vdev->htt_tcl_metadata;
+  3289	
+  3290		dp_tx_opt_dp_wifi_ctrl_process(msdu_info, &htt_tcl_metadata);
+  3291	
+  3292		if (msdu_info->exception_fw)
+  3293			DP_TX_TCL_METADATA_VALID_HTT_SET(htt_tcl_metadata, 1);
+  3294	
+  3295		dp_tx_desc_update_fast_comp_flag(soc, tx_desc,
+  3296						 !pdev->enhanced_stats_en);
+  3297	
+  3298		dp_tx_desc_update_bcast_flag(soc, tx_desc, nbuf);
+  3299	
+  3300		dp_tx_update_mesh_flags(soc, vdev, tx_desc);
+  3301	
+  3302		if (qdf_unlikely(msdu_info->frm_type == dp_tx_frm_rmnet))
+  3303			paddr = dp_tx_rmnet_nbuf_map(msdu_info, tx_desc);
+  3304		else
+  3305			paddr =  dp_tx_nbuf_map(vdev, tx_desc, nbuf);
+  3306	
+  3307		if (!paddr) {
+  3308			/* Handle failure */
+  3309			dp_err_rl("qdf_nbuf_map failed");
+  3310			DP_STATS_INC(vdev,
+
+########## policy_mgr_incr_active_session (5323-5420):
+  5323	void policy_mgr_incr_active_session(struct wlan_objmgr_psoc *psoc,
+  5324					enum QDF_OPMODE mode,
+  5325					uint8_t session_id)
+  5326	{
+  5327		struct policy_mgr_psoc_priv_obj *pm_ctx;
+  5328		uint32_t conn_6ghz_flag = 0;
+  5329	
+  5330		pm_ctx = policy_mgr_get_context(psoc);
+  5331		if (!pm_ctx) {
+  5332			policy_mgr_err("Invalid Context");
+  5333			return;
+  5334		}
+  5335	
+  5336		/*
+  5337		 * Need to acquire mutex as entire functionality in this function
+  5338		 * is in critical section
+  5339		 */
+  5340		qdf_mutex_acquire(&pm_ctx->qdf_conc_list_lock);
+  5341		switch (mode) {
+  5342		case QDF_PASSTHRU_MODE:
+  5343		case QDF_STA_MODE:
+  5344		case QDF_P2P_CLIENT_MODE:
+  5345		case QDF_P2P_GO_MODE:
+  5346		case QDF_SAP_MODE:
+  5347		case QDF_NAN_DISC_MODE:
+  5348		case QDF_NDI_MODE:
+  5349			pm_ctx->no_of_active_sessions[mode]++;
+  5350			break;
+  5351		default:
+  5352			break;
+  5353		}
+  5354	
+  5355		if (mode == QDF_NDI_MODE &&
+  5356		    pm_ctx->hdd_cbacks.wlan_hdd_indicate_active_ndp_cnt)
+  5357			pm_ctx->hdd_cbacks.wlan_hdd_indicate_active_ndp_cnt(
+  5358					psoc, session_id,
+  5359					pm_ctx->no_of_active_sessions[mode]);
+  5360	
+  5361		if (mode != QDF_NAN_DISC_MODE && pm_ctx->dp_cbacks.hdd_v2_flow_pool_map)
+  5362			pm_ctx->dp_cbacks.hdd_v2_flow_pool_map(session_id);
+  5363		if (mode == QDF_SAP_MODE || mode == QDF_P2P_GO_MODE)
+  5364			policy_mgr_get_ap_6ghz_capable(psoc, session_id,
+  5365						       &conn_6ghz_flag);
+  5366	
+  5367		policy_mgr_debug("No.# of active sessions for mode %d = %d",
+  5368			mode, pm_ctx->no_of_active_sessions[mode]);
+  5369		policy_mgr_incr_connection_count(psoc, session_id, mode);
+  5370	
+  5371		if ((policy_mgr_mode_specific_connection_count(
+  5372			psoc, PM_STA_MODE, NULL) > 0) && (mode != QDF_STA_MODE)) {
+  5373			/* Send set pcl for all the connected STA vdev */
+  5374			qdf_mutex_release(&pm_ctx->qdf_conc_list_lock);
+  5375			polic_mgr_send_pcl_to_fw(psoc, mode);
+  5376			qdf_mutex_acquire(&pm_ctx->qdf_conc_list_lock);
+  5377		}
+  5378	
+  5379		/* Notify tdls */
+  5380		if (pm_ctx->tdls_cbacks.tdls_notify_increment_session)
+  5381			pm_ctx->tdls_cbacks.tdls_notify_increment_session(psoc);
+  5382	
+  5383		/*
+  5384		 * Disable LRO/GRO if P2P or SAP connection has come up or
+  5385		 * there are more than one STA connections
+  5386		 */
+  5387		if ((policy_mgr_mode_specific_connection_count(psoc, PM_STA_MODE, NULL) > 1) ||
+  5388		    (policy_mgr_get_beaconing_mode_count(psoc, NULL) > 0) ||
+  5389		    (policy_mgr_mode_specific_connection_count(psoc, PM_P2P_CLIENT_MODE, NULL) >
+  5390										0) ||
+  5391		    (policy_mgr_mode_specific_connection_count(psoc,
+  5392							       PM_NDI_MODE,
+  5393							       NULL) > 0)) {
+  5394			if (pm_ctx->dp_cbacks.hdd_disable_rx_ol_in_concurrency)
+  5395				pm_ctx->dp_cbacks.hdd_disable_rx_ol_in_concurrency(true);
+  5396		};
+  5397	
+  5398		/* Enable RPS if SAP interface has come up */
+  5399		if (policy_mgr_get_sap_mode_count(psoc, NULL) == 1) {
+  5400			if (pm_ctx->dp_cbacks.hdd_set_rx_mode_rps_cb)
+  5401				pm_ctx->dp_cbacks.hdd_set_rx_mode_rps_cb(true);
+  5402		}
+  5403		if (mode == QDF_SAP_MODE || mode == QDF_P2P_GO_MODE)
+  5404			policy_mgr_init_ap_6ghz_capable(psoc, session_id,
+  5405							conn_6ghz_flag);
+  5406		if (mode == QDF_SAP_MODE || mode == QDF_P2P_GO_MODE ||
+  5407		    mode == QDF_STA_MODE || mode == QDF_P2P_CLIENT_MODE)
+  5408			policy_mgr_update_dfs_master_dynamic_enabled(psoc, false, NULL);
+  5409	
+  5410		policy_mgr_dump_current_concurrency(psoc);
+  5411	
+  5412		if (policy_mgr_update_indoor_concurrency(psoc, session_id, 0, CONNECT))
+  5413			wlan_reg_recompute_current_chan_list(psoc, pm_ctx->pdev);
+  5414	
+  5415		qdf_mutex_release(&pm_ctx->qdf_conc_list_lock);
+  5416		if (mode == QDF_SAP_MODE || mode == QDF_P2P_GO_MODE)
+  5417			ml_nlink_conn_change_notify(
+  5418				psoc, session_id, ml_nlink_ap_started_evt, NULL);
+  5419	}
+  5420	

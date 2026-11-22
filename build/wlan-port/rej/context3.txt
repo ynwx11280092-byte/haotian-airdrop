@@ -1,0 +1,142 @@
+########## dp_tx_hw_enqueue_be location:
+1669:dp_tx_hw_enqueue_be(struct dp_soc *soc, struct dp_vdev *vdev,
+
+########## EAPOL alloc location:
+1308:	if (nbuf->protocol == QDF_NBUF_TRAC_EAPOL_ETH_TYPE)
+1476:	if (nbuf->protocol == QDF_NBUF_TRAC_EAPOL_ETH_TYPE)
+2581:	if (nbuf->protocol == QDF_NBUF_TRAC_EAPOL_ETH_TYPE)
+
+########## dp_tx_desc_update_fast_comp_flag usages:
+2392: * dp_tx_update_mesh_flags() - Update descriptor flags for mesh VAP
+2399:static inline void dp_tx_update_mesh_flags(struct dp_soc *soc,
+2450:static inline void dp_tx_update_mesh_flags(struct dp_soc *soc,
+3295:	dp_tx_desc_update_fast_comp_flag(soc, tx_desc,
+3298:	dp_tx_desc_update_bcast_flag(soc, tx_desc, nbuf);
+3300:	dp_tx_update_mesh_flags(soc, vdev, tx_desc);
+
+########## policy_mgr_incr_active_session location:
+4347:	policy_mgr_incr_active_session(psoc, mode, vdev_id);
+5323:void policy_mgr_incr_active_session(struct wlan_objmgr_psoc *psoc,
+
+########## __hdd_vdev_destroy body:
+  7640	
+  7641	#ifdef DRIVER_PASSTHRU_OWNER
+  7642		if (record)
+  7643			record->steps |= HDD_PT_VDEV_DELETE_WAIT_COMPLETED;
+  7644	#endif
+  7645		hdd_nofl_info("vdev %d destroyed successfully", vdev_id);
+  7646		return 0;
+  7647	}
+  7648	
+  7649	static inline
+  7650	void hdd_vdev_deinit_components(struct wlan_objmgr_vdev *vdev)
+  7651	{
+  7652		ucfg_pmo_del_wow_pattern(vdev);
+  7653		ucfg_son_disable_cbs(vdev);
+  7654	}
+  7655	
+  7656	static inline
+  7657	void hdd_reset_vdev_info(struct wlan_hdd_link_info *link_info)
+  7658	{
+  7659		qdf_spin_lock_bh(&link_info->vdev_lock);
+  7660		link_info->vdev = NULL;
+  7661		qdf_spin_unlock_bh(&link_info->vdev_lock);
+  7662	}
+  7663	
+  7664	static int
+  7665	hdd_vdev_delete_return(struct hdd_pt_vdev_record *record, int result)
+  7666	{
+  7667	#ifdef DRIVER_PASSTHRU_OWNER
+  7668		if (record) {
+  7669			record->delete_result = result;
+  7670			record->steps |= HDD_PT_VDEV_DELETE_RETURNED;
+  7671		}
+  7672	#endif
+  7673		return result;
+  7674	}
+  7675	
+  7676	static int
+  7677	__hdd_vdev_destroy(struct wlan_hdd_link_info *link_info,
+  7678			   struct hdd_pt_vdev_record *record)
+  7679	{
+  7680		int ret;
+  7681		uint8_t vdev_id;
+  7682		struct hdd_context *hdd_ctx;
+  7683		struct wlan_objmgr_vdev *vdev;
+  7684		struct wlan_objmgr_psoc *psoc;
+  7685		enum QDF_OPMODE op_mode;
+  7686	
+  7687		vdev_id = link_info->vdev_id;
+  7688		hdd_nofl_debug("destroying vdev %d", vdev_id);
+  7689		/* vdev created sanity check */
+  7690		if (!test_bit(SME_SESSION_OPENED, &link_info->link_flags)) {
+  7691			hdd_nofl_debug("vdev %u does not exist", vdev_id);
+  7692			return -EINVAL;
+  7693		}
+  7694	
+  7695		hdd_ctx = WLAN_HDD_GET_CTX(link_info->adapter);
+  7696	
+  7697		vdev = hdd_objmgr_get_vdev_by_user(link_info, WLAN_OSIF_ID);
+  7698		if (!vdev)
+  7699			return -EINVAL;
+  7700	
+  7701		psoc = wlan_vdev_get_psoc(vdev);
+  7702		if (!psoc) {
+  7703			hdd_err("invalid psoc");
+  7704			return -EINVAL;
+  7705		}
+  7706		op_mode = wlan_vdev_mlme_get_opmode(vdev);
+  7707	
+  7708		hdd_stop_last_active_connection(hdd_ctx, vdev);
+  7709		hdd_check_wait_for_hw_mode_completion(hdd_ctx);
+  7710		ucfg_scan_vdev_set_disable(vdev, REASON_VDEV_DOWN);
+  7711		wlan_hdd_scan_abort(link_info);
+  7712		hdd_vdev_deinit_components(vdev);
+  7713		hdd_mlo_t2lm_unregister_callback(vdev);
+  7714		hdd_objmgr_put_vdev_by_user(vdev, WLAN_OSIF_ID);
+  7715	
+  7716		hdd_reset_vdev_info(link_info);
+  7717		osif_cm_osif_priv_deinit(vdev);
+  7718	
+  7719		/* Release the hdd reference */
+  7720		wlan_objmgr_vdev_release_ref(vdev, WLAN_HDD_ID_OBJ_MGR);
+  7721	#ifdef DRIVER_PASSTHRU_OWNER
+  7722		if (record)
+  7723			record->steps |= HDD_PT_VDEV_HDD_REF_RELEASED;
+  7724	#endif
+  7725	
+  7726		/* Get runtime lock to prevent runtime suspend */
+  7727		qdf_runtime_pm_prevent_suspend(&hdd_ctx->runtime_context.vdev_destroy);
+  7728	
+  7729		ret = hdd_vdev_destroy_event_wait(hdd_ctx, vdev, record);
+  7730	
+  7731		ucfg_reg_11d_vdev_delete_update(psoc, op_mode, vdev_id);
+  7732	
+  7733		qdf_runtime_pm_allow_suspend(&hdd_ctx->runtime_context.vdev_destroy);
+  7734		return hdd_vdev_delete_return(record, ret);
+  7735	}
+  7736	
+  7737	int hdd_vdev_destroy(struct wlan_hdd_link_info *link_info)
+  7738	{
+  7739		return __hdd_vdev_destroy(link_info, NULL);
+  7740	}
+  7741	
+  7742	#ifdef DRIVER_PASSTHRU_OWNER
+  7743	int hdd_pt_vdev_destroy(struct wlan_hdd_link_info *link_info,
+  7744				struct hdd_pt_vdev_record *record)
+  7745	{
+  7746		if (!link_info || !link_info->adapter || !record ||
+  7747		    link_info->adapter->device_mode != QDF_PASSTHRU_MODE ||
+  7748		    !record->generation ||
+  7749		    record->link != link_info)
+  7750			return -EINVAL;
+  7751	#ifdef DRIVER_PASSTHRU_MODE
+  7752		if (record->generation != link_info->adapter->passthru_generation)
+  7753			return -EINVAL;
+  7754	#endif
+  7755		if (record->steps & HDD_PT_VDEV_DELETE_CALLED)
+  7756			return -EALREADY;
+  7757		if (!(record->steps & HDD_PT_VDEV_CREATE_RETURNED))
+  7758			return -EBUSY;
+  7759		if (!(record->steps & HDD_PT_VDEV_OBTAINED))
+  7760			return -ENOENT;

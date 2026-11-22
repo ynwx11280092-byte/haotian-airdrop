@@ -1,0 +1,9 @@
+=== FILE: qcacld-3.0/components/umac/mlme/connection_mgr/dispatcher/inc/wlan_cm_roam_public_struct.h
+
+<<<<<<<
+=======
+	RSO_SET_LINK           = BIT(6),
+	RSO_PASSTHRU_SET_CHANNEL = BIT(7),
+>>>>>>>
+
+---

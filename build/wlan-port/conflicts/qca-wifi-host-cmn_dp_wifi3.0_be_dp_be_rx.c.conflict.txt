@@ -1,0 +1,28 @@
+=== FILE: qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_rx.c
+
+<<<<<<<
+=======
+#ifndef CONFIG_BORON
+#ifdef DRIVER_PASSTHRU_DP
+/* Mode lookup only; no OSIF context is accessed before the RX data gate. */
+static bool
+dp_rx_passthru_skip_raw_drop(struct dp_soc *soc, qdf_nbuf_t nbuf)
+{
+	struct dp_vdev *vdev;
+	bool passthru;
+
+	if (!qdf_nbuf_is_raw_frame(nbuf))
+		return false;
+	vdev = dp_vdev_get_ref_by_id(soc, QDF_NBUF_CB_RX_VDEV_ID(nbuf),
+				   DP_MOD_ID_RX);
+	if (!vdev)
+		return false;
+	passthru = vdev->opmode == wlan_op_mode_passthru;
+	dp_vdev_unref_delete(soc, vdev, DP_MOD_ID_RX);
+	return passthru;
+}
+#endif
+
+>>>>>>>
+
+---

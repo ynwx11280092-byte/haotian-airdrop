@@ -1,0 +1,19 @@
+=== FILE: qcacld-3.0/core/sme/inc/sme_internal.h
+
+<<<<<<<
+=======
+				      struct wlan_objmgr_vdev *vdev);
+	void (*set_disconnect_link_info_cb)(uint8_t vdev_id,
+					    bool is_disconnect_sent);
+#ifdef DRIVER_PASSTHRU_SESSION
+	void (*passthrough_mode_cb)(uint8_t, enum sir_passthru_event, QDF_STATUS, uint32_t);
+	bool passthrough_cb_retired;
+#endif
+#ifdef DRIVER_PASSTHRU_OWNER
+	/* SME lock protects admission; queue count includes completion tails. */
+	bool passthru_requests_closed;
+	qdf_atomic_t passthru_queue_refs;
+#endif
+>>>>>>>
+
+---
