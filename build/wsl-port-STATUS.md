@@ -34,3 +34,9 @@
 - `dist/haotian-modules-2026-11-23.zip`
 - `dist/haotian-airdrop-v1.0.5-source.zip`
 - `dist/haotian-phone-data.zip`
+
+## 使用前提（实测）
+
+- iPhone：隔空投送设为「所有人，10 分钟」；
+- 每次让小米搜到 iPhone：小米页面先打开 → iPhone 上关闭再打开一次隔空投送 → 1–3 秒出现；
+- 原因：iPhone 仅在自己的 AirDrop 状态变化时重新公告 mDNS 服务；小米端查询/BLE 刷新无法稳定替代。
