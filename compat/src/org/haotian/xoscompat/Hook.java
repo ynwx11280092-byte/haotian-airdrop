@@ -46,6 +46,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class Hook implements IXposedHookLoadPackage {
     private static final String TAG = "HaotianXosCompat";
+    // 上一次 iPhone 的 mDNS 源地址：下次会话直接向它发 QU 单播查询，提高发现成功率
+    private static volatile java.net.Inet6Address sLastMdnsPeer;
     private static final String MISHARE_PKG = "com.miui.mishare.connectivity";
     private static final String RESOLVER_PKG = "com.android.intentresolver";
     private static final String AIRDROP_TRAMPOLINE =
@@ -793,8 +795,19 @@ public final class Hook implements IXposedHookLoadPackage {
             while ("1".equals(xosExclusiveValue()) && System.currentTimeMillis() - start < 120000) {
                 long now = System.currentTimeMillis();
                 if (now >= nextq) {
-                    byte[] q = buildPtrQuery((queries++ & 1) == 0);
+                    boolean qu = (queries++ & 1) == 0;
+                    byte[] q = buildPtrQuery(qu);
                     try { ch.send(java.nio.ByteBuffer.wrap(q), dst); } catch (Throwable e) { }
+                    java.net.Inet6Address peer = sLastMdnsPeer;
+                    if (peer != null) {
+                        try {
+                            java.net.Inet6Address scoped = java.net.Inet6Address.getByAddress(
+                                    null, peer.getAddress(), nif.getIndex());
+                            ch.send(java.nio.ByteBuffer.wrap(q),
+                                    new java.net.InetSocketAddress(scoped, 5353));
+                            if (queries <= 6) Log.i(TAG, "mDNS unicast QU -> " + peer);
+                        } catch (Throwable e) { }
+                    }
                     nextq = now + (now - start < 1200 ? 120 : (now - start < 3000 ? 300 : 1200));
                 }
                 rbuf.clear();
@@ -805,17 +818,22 @@ public final class Hook implements IXposedHookLoadPackage {
                 int len = rbuf.remaining();
                 byte[] data = new byte[len];
                 rbuf.get(data);
-                if (len < 12 || (data[2] & 0x80) == 0) continue;
+                if (len < 12) continue;
                 // 跳过自己发出的包（多进程时也可能来自同机另一 socket）
                 boolean self = false;
+                java.net.Inet6Address src6 = null;
                 if (from instanceof java.net.InetSocketAddress) {
                     java.net.InetAddress a = ((java.net.InetSocketAddress) from).getAddress();
-                    if (a instanceof java.net.Inet6Address
-                            && java.util.Arrays.equals(a.getAddress(), localBytes)) {
-                        self = true;
+                    if (a instanceof java.net.Inet6Address) {
+                        src6 = (java.net.Inet6Address) a;
+                        if (java.util.Arrays.equals(a.getAddress(), localBytes)) self = true;
                     }
                 }
                 if (self) continue;
+                if (src6 != null && src6.isLinkLocalAddress()) {
+                    sLastMdnsPeer = src6;
+                }
+                if ((data[2] & 0x80) == 0) continue;   // iPhone 的查询包：只记地址，不扇出
                 long h = 0;
                 int n = Math.min(len, 48);
                 for (int k = 0; k < n; k++) h = h * 31 + (data[k] & 0xff);
@@ -838,10 +856,6 @@ public final class Hook implements IXposedHookLoadPackage {
             if (ch != null) { try { ch.close(); } catch (Throwable ignored) { } }
         }
     }
-
-
-    private static final java.util.Set<Object> CTA_GATE_DONE =
-            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<Object, Boolean>());
 
 
     private static void hookLivePhoto(ClassLoader cl) {

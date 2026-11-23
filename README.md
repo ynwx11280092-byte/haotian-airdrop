@@ -206,7 +206,7 @@ node tools/package.mjs --inputs build/out --upstream upstream [--firmware ...]
 本工程与小米、苹果、三星、高通无关。
 
 
-## v1.0.0（最终版，2026-11-23）
+## v1.0.5（最终稳定版，2026-11-23）
 
 ### 已验证功能
 - iPhone → 小米：隔空投送发送/接收正常（含 Live Photo 合成，受 MiShare 版本支持范围限制）；
@@ -234,3 +234,11 @@ node tools/package.mjs --inputs build/out --upstream upstream [--firmware ...]
 - 删除未使用的 wait_wifi 等死代码；
 - mDNS 探测：单进程、去重（3 s 内相同响应只扇出一次）、限速 10 次/秒，避免自激风暴；
 - query 节奏：会话就绪后 120 ms 起连续快发，之后 300 ms/1.2 s 递减，兼顾速度与空口。
+
+
+### v1.0.5 发现稳定性（2026-11-23）
+
+- MiShare 进程内 mDNS 探测线程会**缓存上一次 iPhone 的 mDNS 源地址**；
+- 下次会话除组播查询外，会直接向该地址发 **QU 单播查询**，并把 iPhone 的单播响应扇出为组播；
+- 实测（haotian + iPhone，多次关开 iPhone 隔空投送）：设备显示稳定；
+- 仍建议使用顺序：小米页面先打开 → iPhone 关/开一次隔空投送（或重新打开 AirDrop 面板）→ 1–3 秒内出现。

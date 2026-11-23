@@ -1,4 +1,4 @@
-# WSL2 构建/适配最终状态（v1.0.0，2026-11-23 01:30）
+# WSL2 构建/适配最终状态（v1.0.5，2026-11-23 01:30）
 
 ## 结论：功能已跑通
 
@@ -21,10 +21,16 @@
    - 跳过 MiShare 5.5.0 的 5GHz STA handoff（v1.1.2 同款修复）；
    - MiShare 进程内 mDNS 探测（xos0 Network 绑定 socket 发 QU/QM + 单播响应扇出为组播，单进程/去重/限速防风暴）。
 
+## v1.0.5 说明
+
+- 用户态发现：MiShare 进程内 mDNS 探测 + 缓存 iPhone 源地址 + QU 单播查询 + 单播响应组播扇出；
+- 实测「关开 iPhone 隔空投送」后设备显示稳定；
+- iPhone 端 AirDrop 需为「所有人（10 分钟）」。
+
 ## 最终产物
 
-- `dist/haotian-airdrop-v1.0.0-with-firmware.zip`（模块安装包，含 5 个 ko + 固件 + 兼容 APK）
+- `dist/haotian-airdrop-v1.0.5-with-firmware.zip`（模块安装包，含 5 个 ko + 固件 + 兼容 APK）
 - `dist/Haotian-XOS-Compat.apk`
 - `dist/haotian-modules-2026-11-23.zip`
-- `dist/haotian-airdrop-v1.0.0-source.zip`
+- `dist/haotian-airdrop-v1.0.5-source.zip`
 - `dist/haotian-phone-data.zip`
